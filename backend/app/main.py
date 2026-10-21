@@ -23,7 +23,7 @@ from .security import Auth, make_token
 from .sheets import make_sheet_source
 from .store import Store, load_seed
 
-store = Store(settings.database_path)
+store = Store(settings.database_path, settings.database_url)
 ctx = services.AppContext(settings, IssuerSigner(settings.issuer_key_file),
                           make_anchor(settings.anchor_mode, settings.network,
                                       settings.web3_rpc_url, settings.web3_private_key))
@@ -49,6 +49,7 @@ app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins,
 @app.get("/health")
 def health():
     return {"status": "ok", "passports": len(store.list_passports()),
+            "database": store.kind,
             "sheetSource": settings.sheet_source, "anchorMode": settings.anchor_mode,
             "network": settings.network}
 

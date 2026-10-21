@@ -16,7 +16,8 @@ def _bool(name: str, default: bool) -> bool:
 
 @dataclass
 class Settings:
-    # storage
+    # storage: PostgreSQL when DATABASE_URL is set (production), else SQLite file
+    database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", ""))
     database_path: Path = field(default_factory=lambda: Path(os.getenv("DATABASE_PATH", BACKEND_DIR / "data" / "passports.db")))
     seed_file: Path = field(default_factory=lambda: Path(os.getenv("SEED_FILE", REPO_DIR / "frontend" / "src" / "data" / "records.json")))
 

@@ -67,8 +67,9 @@ cd /opt/aipassport && sudo ./deploy/deploy.sh   # git pull, rebuild, restart
 
 ## Notes
 
-- **Back up together:** `/opt/aipassport/backend/data/passports.db` and
-  `.../backend/data/issuer_key.pem` (the BTU signing key).
+- **Back up together:** the PostgreSQL database (`pg_dump aipassport`) and
+  `/opt/aipassport/backend/data/issuer_key.pem` (the BTU signing key).
+  The old SQLite file, if migrated from, is kept untouched as a rollback.
 - **Admin security:** the frontend build bakes `VITE_ADMIN_API_KEY` from
   `/opt/aipassport/.env` so the Admin page can call the API — visible in
   page source, i.e. demo-grade like the rest of the MVP. For real

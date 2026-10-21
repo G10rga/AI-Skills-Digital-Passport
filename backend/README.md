@@ -1,6 +1,6 @@
 # BTU AI Skills Digital Passport — Python backend
 
-Pure-Python core (FastAPI + SQLite, all computation in `app/`) implementing
+Pure-Python core (FastAPI + PostgreSQL/SQLite, all computation in `app/`) implementing
 [`frontend/API_CONTRACT.md`](../frontend/API_CONTRACT.md) 1:1. Response shapes
 match `frontend/src/lib/types.ts` exactly.
 
@@ -17,8 +17,7 @@ python3 -m venv .venv && .venv/bin/pip install -r backend/requirements-dev.txt
 .venv/bin/python backend/run.py                   # http://127.0.0.1:8000/docs
 ```
 
-Open http://localhost:8000/docs. On first start the DB
-(`data/passports.db`, git-ignored) is seeded from
+Open http://localhost:8000/docs. On first start the database is seeded from
 `frontend/src/data/records.json`: one passport per student, V1 issued from
 rows already marked `SYNCED`.
 
@@ -50,7 +49,7 @@ real passport does.
 | Blockchain anchoring per version | `app/anchor.py` — `SimulatedAnchor` (default, deterministic & offline, same tx/block derivation as the mock) or `Web3Anchor` (`ANCHOR_MODE=web3`, real Polygon Amoy tx with the hash as calldata) |
 | Public verification, no login | `GET /verify/{code}`, `POST /verify/document`, `POST /verify/document/pdf` (extracts the printed code/hash from an uploaded PDF) |
 | Student access | `POST /auth/login {email}` → signed bearer token → `GET /me/passport`. This is the one seam to swap for real BTU SSO/OAuth |
-| Scale (5,000+/yr) | Batched per-passport versioning in one sync pass, indexed SQLite; store layer is the only thing to swap for Postgres |
+| Scale (5,000+/yr) | Batched per-passport versioning in one sync pass, indexed store; PostgreSQL in production via `DATABASE_URL` (SQLite locally) |
 
 ## Endpoints
 
@@ -77,7 +76,7 @@ only). Config is all env vars, see `.env.example`.
 app/config.py     env settings          app/anchor.py   chain anchoring (simulated | web3)
 app/models.py     wire shapes (= types.ts)  app/issuer.py  Ed25519 BTU signing key
 app/canonical.py  canonical JSON + SHA-256  app/sheets.py  Google / XLSX / JSON sheet sources
-app/store.py      SQLite persistence    app/services.py sync / issue / verify (pure, tested)
+app/store.py      Postgres/SQLite store app/services.py sync / issue / verify (pure, tested)
 app/security.py   admin key + student tokens
 app/main.py       FastAPI endpoints     tests/          pytest suite
 ```

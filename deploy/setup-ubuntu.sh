@@ -24,7 +24,8 @@ systemctl stop aipassport-api.service aipassport-web.service 2>/dev/null || true
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y python3 python3-venv python3-pip git rsync curl
+apt-get install -y python3 python3-venv python3-pip git rsync curl postgresql postgresql-contrib
+systemctl enable --now postgresql
 
 # Frontend needs Node >= 20 (Vite). Install Node 22 if missing/too old.
 if ! command -v node >/dev/null || [[ "$(node -v | sed 's/v//;s/\..*//')" -lt 20 ]]; then
@@ -68,6 +69,43 @@ SHEET_SOURCE=seed
 ANCHOR_MODE=simulated
 EOF
   echo "Generated ${APP_HOME}/.env (ADMIN_API_KEY inside — needed below for the frontend build)"
+fi
+
+# Self-hosted PostgreSQL (same convention as Teoria): dedicated role+db,
+# DATABASE_URL in /opt/aipassport/.env. Idempotent; safe to re-run.
+set -a; source "${APP_HOME}/.env"; set +a
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  DB_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${APP_USER}') THEN
+    CREATE ROLE ${APP_USER} LOGIN PASSWORD '${DB_PASS}';
+  ELSE
+    ALTER ROLE ${APP_USER} LOGIN PASSWORD '${DB_PASS}';
+  END IF;
+END
+\$\$;
+SELECT 'CREATE DATABASE ${APP_USER} OWNER ${APP_USER}'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${APP_USER}')\gexec
+GRANT ALL PRIVILEGES ON DATABASE ${APP_USER} TO ${APP_USER};
+SQL
+  sudo -u postgres psql -d "${APP_USER}" -v ON_ERROR_STOP=1 \
+    -c "GRANT ALL ON SCHEMA public TO ${APP_USER}; ALTER SCHEMA public OWNER TO ${APP_USER};"
+  DATABASE_URL="postgresql://${APP_USER}:${DB_PASS}@127.0.0.1:5432/${APP_USER}"
+  echo "DATABASE_URL=${DATABASE_URL}" >> "${APP_HOME}/.env"
+  chown "${APP_USER}:${APP_USER}" "${APP_HOME}/.env"; chmod 600 "${APP_HOME}/.env"
+  echo "PostgreSQL ready: database '${APP_USER}' on 127.0.0.1:5432"
+fi
+
+# If a previous SQLite install has real data, copy it into Postgres
+# (idempotent, leaves the .db file untouched as backup/rollback).
+if [[ -f "${APP_HOME}/backend/data/passports.db" ]]; then
+  echo "Migrating existing SQLite data to PostgreSQL (if any)..."
+  sudo -u "${APP_USER}" env DATABASE_URL="${DATABASE_URL}" \
+    "${APP_HOME}/.venv/bin/python" "${APP_HOME}/backend/tools/migrate_sqlite_to_postgres.py" \
+    "${APP_HOME}/backend/data/passports.db" || \
+    echo "note: SQLite migration skipped/failed — Postgres will seed fresh from records.json"
 fi
 
 # Frontend build. The API base is baked in at build time; API paths share
