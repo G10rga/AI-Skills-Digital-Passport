@@ -49,6 +49,17 @@ CREATE TABLE IF NOT EXISTS skill_requests(
   evidence_url TEXT DEFAULT '', description TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'PENDING', admin_note TEXT DEFAULT '',
   record_id TEXT DEFAULT '', created_at TEXT NOT NULL, decided_at TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS verification_codes(
+  email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
+  attempts INT NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS passport_requests(
+  id INTEGER PRIMARY KEY, email TEXT NOT NULL, student_id TEXT DEFAULT '',
+  first_name TEXT DEFAULT '', last_name TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'PENDING_STAFF', passport_id TEXT DEFAULT '',
+  note TEXT DEFAULT '', created_at TEXT NOT NULL, decided_at TEXT DEFAULT '');
+CREATE TABLE IF NOT EXISTS notifications(
+  id INTEGER PRIMARY KEY, email TEXT NOT NULL, message TEXT NOT NULL,
+  created_at TEXT NOT NULL, is_read INT NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS idx_versions_passport ON versions(passport_id, version);
 CREATE INDEX IF NOT EXISTS idx_records_passport ON records(passport_id, sync_status);
 CREATE INDEX IF NOT EXISTS idx_requests_student ON skill_requests(student_email, status);
@@ -148,7 +159,8 @@ class Store:
                 raise
 
     def reset(self) -> None:
-        for table in ("version_skills", "versions", "records", "passports", "skill_requests"):
+        for table in ("version_skills", "versions", "records", "passports", "skill_requests",
+                      "verification_codes", "passport_requests", "notifications"):
             self._run(f"DELETE FROM {table}")
 
     # ---- passports -------------------------------------------------
@@ -291,5 +303,77 @@ class Store:
         return self.get_request(request_id)
 
 
+    # ---- account verification codes ----------------------------------
+    def save_code(self, email: str, code_hash: str, expires_at: str, created_at: str) -> None:
+        sql = ("INSERT INTO verification_codes(email,code_hash,expires_at,attempts,created_at)"
+               " VALUES (?,?,?,0,?)")
+        if self.kind == "postgres":
+            sql += (" ON CONFLICT (email) DO UPDATE SET code_hash=EXCLUDED.code_hash,"
+                    " expires_at=EXCLUDED.expires_at, attempts=0, created_at=EXCLUDED.created_at")
+            self._run(sql, (email, code_hash, expires_at, created_at))
+        else:
+            self._run("DELETE FROM verification_codes WHERE email=?", (email,))
+            self._run(sql, (email, code_hash, expires_at, created_at))
+
+    def get_code(self, email: str) -> Optional[dict]:
+        return self._one("SELECT * FROM verification_codes WHERE lower(email)=lower(?)", (email,))
+
+    def bump_code_attempts(self, email: str) -> None:
+        self._run("UPDATE verification_codes SET attempts=attempts+1 WHERE lower(email)=lower(?)",
+                  (email,))
+
+    def delete_code(self, email: str) -> None:
+        self._run("DELETE FROM verification_codes WHERE lower(email)=lower(?)", (email,))
+
+    def get_passport_by_student_id(self, student_id: str) -> Optional[dict]:
+        return self._one("SELECT * FROM passports WHERE student_id=?", (student_id,))
+
+    # ---- passport requests + notifications ----------------------------
+    def _insert_row(self, table: str, data: dict) -> dict:
+        cols = list(data)
+        sql = f"INSERT INTO {table}({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
+        with self._lock:
+            try:
+                cur = self.db.cursor()
+                if self.kind == "postgres":
+                    cur.execute(self._sql(sql) + " RETURNING id", tuple(data[c] for c in cols))
+                    rid = cur.fetchone()["id"]
+                else:
+                    cur.execute(sql, tuple(data[c] for c in cols))
+                    rid = cur.lastrowid
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
+        return self._one(f"SELECT * FROM {table} WHERE id=?", (rid,))
+
+    def create_passport_request(self, data: dict) -> dict:
+        return self._insert_row("passport_requests", data)
+
+    def latest_passport_request(self, email: str) -> Optional[dict]:
+        return self._one("SELECT * FROM passport_requests WHERE lower(email)=lower(?)"
+                         " ORDER BY id DESC", (email,))
+
+    def list_passport_requests(self) -> list[dict]:
+        return self._all("SELECT * FROM passport_requests ORDER BY id DESC")
+
+    def get_passport_request(self, request_id: int) -> Optional[dict]:
+        return self._one("SELECT * FROM passport_requests WHERE id=?", (request_id,))
+
+    def decide_passport_request(self, request_id: int, status: str, note: str,
+                                decided_at: str, passport_id: str = "") -> Optional[dict]:
+        self._run("UPDATE passport_requests SET status=?,note=?,decided_at=?,passport_id=?"
+                  " WHERE id=?", (status, note, decided_at, passport_id, request_id))
+        return self.get_passport_request(request_id)
+
+    def add_notification(self, email: str, message: str, created_at: str) -> None:
+        self._run("INSERT INTO notifications(email,message,created_at) VALUES (?,?,?)",
+                  (email, message, created_at))
+
+    def list_notifications(self, email: str) -> list[dict]:
+        return self._all("SELECT * FROM notifications WHERE lower(email)=lower(?)"
+                         " ORDER BY id DESC", (email,))
+
 def load_seed(path: Path) -> list[dict]:
     return json.loads(path.read_text(encoding="utf-8"))
+

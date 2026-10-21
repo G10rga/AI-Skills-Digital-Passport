@@ -49,6 +49,16 @@ class Settings:
     allow_dev_email_auth: bool = field(default_factory=lambda: _bool("ALLOW_DEV_EMAIL_AUTH", True))
     allow_reset: bool = field(default_factory=lambda: _bool("ALLOW_RESET", True))
 
+    # account verification (email code before passport access / requests)
+    require_verified_account: bool = field(default_factory=lambda: _bool("REQUIRE_VERIFIED_ACCOUNT", True))
+    verification_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("VERIFICATION_TTL_MINUTES", "10")))
+    smtp_host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", ""))
+    smtp_port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))
+    smtp_user: str = field(default_factory=lambda: os.getenv("SMTP_USER", ""))
+    smtp_password: str = field(default_factory=lambda: os.getenv("SMTP_PASSWORD", ""))
+    smtp_from: str = field(default_factory=lambda: os.getenv("SMTP_FROM", ""))
+    smtp_tls: bool = field(default_factory=lambda: _bool("SMTP_TLS", True))
+
     cors_origins: list[str] = field(default_factory=lambda: [
         o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:8080").split(",") if o.strip()
     ])

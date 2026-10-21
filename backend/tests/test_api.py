@@ -96,10 +96,8 @@ def test_issuer_signature_verifiable_independently():
 
 
 def test_student_login_and_my_passport():
-    bad = client.post("/auth/login", json={"email": "nobody@example.org"})
-    assert bad.status_code == 404
-    ok = client.post("/auth/login", json={"email": "btu-t-0001@example.org"}).json()
-    mine = client.get("/me/passport", headers={"Authorization": f"Bearer {ok['token']}"})
+    token = verified_token(client, "btu-t-0001@example.org")
+    mine = client.get("/me/passport", headers={"Authorization": f"Bearer {token}"})
     assert mine.status_code == 200 and mine.json()["passportId"] == "BTU-AI-000125"
     assert client.get("/me/passport").status_code == 401
 
@@ -121,3 +119,12 @@ def test_canonical_hash_parity_with_frontend():
 
 
 GOLDEN_V1_HASH = "8c757f04f4e9264acbfa0042cdefc9508524c350990acfdffc935c32995f35ea"
+
+def verified_token(client, email):
+    r = client.post("/auth/request-code", json={"email": email})
+    assert r.status_code == 200, r.text
+    code = r.json()["devCode"]
+    assert code, "dev delivery should return the code in tests"
+    v = client.post("/auth/verify-code", json={"email": email, "code": code})
+    assert v.status_code == 200, v.text
+    return v.json()["token"]

@@ -149,7 +149,7 @@ echo "Check: curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:${WEB_PO
 echo
 echo "Cloudflare Tunnel — merge into /etc/cloudflared/config.yml (keep your other hostnames):"
 echo "  - hostname: ${DOMAIN}"
-echo "    path: ^/(passports|records|sync|verify/.+|me/passport|auth/.+|anchors/.+|admin/reset|issuer|health|docs|openapi\\.json)(/.*)?\$"
+echo "    path: ^/(passports(/.*)?|records|sync|verify/.*|me/.*|auth/.*|skills/.*|skill-requests(/.*)?|passport-requests|admin/.*|anchors/.*|issuer|health|docs|openapi\.json)$"
 echo "    service:  http://127.0.0.1:${API_PORT}"
 echo "  - hostname: ${DOMAIN}"
 echo "    service:  http://127.0.0.1:${WEB_PORT}"

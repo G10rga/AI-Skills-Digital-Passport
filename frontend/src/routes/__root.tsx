@@ -11,6 +11,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import { SiteHeader, SiteFooter } from "@/components/SiteHeader";
+import { LanguageProvider } from "@/lib/i18n";
 import { Toaster } from "@/components/ui/sonner";
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -121,6 +122,7 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   return (
+    <LanguageProvider>
     <QueryClientProvider client={queryClient}>
       {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
       <SiteHeader />
@@ -130,5 +132,6 @@ function RootComponent() {
       <SiteFooter />
       <Toaster />
     </QueryClientProvider>
+    </LanguageProvider>
   );
 }

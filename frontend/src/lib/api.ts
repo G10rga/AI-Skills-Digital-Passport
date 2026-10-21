@@ -11,6 +11,8 @@ import type {
   PassportSkill,
   PassportSummary,
   PassportVersion,
+  PassportRequest,
+  AppNotification,
   SkillCatalogItem,
   SkillRecord,
   SkillRequest,
@@ -300,23 +302,33 @@ export async function verifyDocumentContent(
   return { recomputedHash, matches: recomputedHash === anchored, anchoredHash: anchored };
 }
 
-// ---------- mock student auth (backend: BTU SSO / OAuth) ----------
+// ---------- student auth: email verification code (backend), mock fallback ----------
 const AUTH_KEY = "btu-passport-session";
-export async function loginStudent(email: string): Promise<{ email: string } | null> {
-  if (REMOTE) {
-    try {
-      const r = await apiFetch<{ email: string; token: string }>("/auth/login", { method: "POST", body: JSON.stringify({ email }) });
-      window.localStorage.setItem(TOKEN_KEY, r.token);
-      window.localStorage.setItem(AUTH_KEY, r.email);
-      return { email: r.email };
-    } catch { return null; }
-  }
-  await wait();
-  const p = await getMyPassport(email);
-  if (!p) return null;
-  window.localStorage.setItem(AUTH_KEY, p.email);
-  return { email: p.email };
+
+/** POST /auth/request-code — sends a 6-digit code; in dev delivery the code is returned. */
+export async function requestVerificationCode(email: string): Promise<{ devCode: string | null }> {
+  if (!REMOTE) return { devCode: "123456" }; // mock mode: any 6-digit-looking flow, code below accepts it
+  const r = await apiFetch<{ devCode: string | null }>("/auth/request-code", { method: "POST", body: JSON.stringify({ email }) });
+  return { devCode: r.devCode };
 }
+
+/** POST /auth/verify-code — verified token; only verified accounts open/request passports. */
+export async function verifyAccountCode(email: string, code: string): Promise<{ email: string } | null> {
+  if (!REMOTE) {
+    if (!/^[0-9]{6}$/.test(code)) return null;
+    const p = await getMyPassport(email);
+    if (!p) return null;
+    window.localStorage.setItem(AUTH_KEY, p.email);
+    return { email: p.email };
+  }
+  try {
+    const r = await apiFetch<{ email: string; token: string }>("/auth/verify-code", { method: "POST", body: JSON.stringify({ email, code }) });
+    window.localStorage.setItem(TOKEN_KEY, r.token);
+    window.localStorage.setItem(AUTH_KEY, r.email);
+    return { email: r.email };
+  } catch { return null; }
+}
+
 export function currentStudentEmail(): string | null {
   return typeof window === "undefined" ? null : window.localStorage.getItem(AUTH_KEY);
 }
@@ -325,8 +337,35 @@ export function logoutStudent() {
   window.localStorage.removeItem(TOKEN_KEY);
 }
 
+// ---------- passport requests ----------
+/** POST /passport-requests — DB check first: READY if data exists, else staff queue */
+export async function requestPassport(studentId: string): Promise<PassportRequest> {
+  requireRemote();
+  return apiFetch<PassportRequest>("/passport-requests", { method: "POST", body: JSON.stringify({ studentId }) });
+}
+
+export async function getMyPassportRequest(): Promise<PassportRequest | null> {
+  requireRemote();
+  return apiFetch<PassportRequest | null>("/me/passport-request");
+}
+
+export async function listNotifications(): Promise<AppNotification[]> {
+  requireRemote();
+  return apiFetch<AppNotification[]>("/me/notifications");
+}
+
+export async function listPassportRequests(): Promise<PassportRequest[]> {
+  requireRemote();
+  return apiFetch<PassportRequest[]>("/admin/passport-requests");
+}
+
+export async function decidePassportRequest(id: number, action: "approve" | "reject", note = ""): Promise<PassportRequest> {
+  requireRemote();
+  return apiFetch<PassportRequest>(`/admin/passport-requests/${id}/${action}`, { method: "POST", body: JSON.stringify({ note }) });
+}
+
 // ---------- skill requests (backend-only feature) ----------
-const requireRemote = () => { if (!REMOTE) throw new Error("Skill requests need the Python backend (set VITE_API_BASE_URL)"); };
+const requireRemote = () => { if (!REMOTE) throw new Error("This feature needs the Python backend (set VITE_API_BASE_URL)"); };
 
 /** GET /skills/catalogue */
 export async function getSkillCatalogue(): Promise<SkillCatalogItem[]> {

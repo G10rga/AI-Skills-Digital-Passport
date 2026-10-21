@@ -15,7 +15,7 @@ ingress:
   # API paths on the same subdomain -> Python backend (8013).
   # Everything else on the hostname falls through to the frontend (8014).
   - hostname: aipassport.g1orga.dev
-    path: ^/(passports|records|sync|verify/.+|me/passport|auth/.+|anchors/.+|admin/reset|issuer|health|docs|openapi\.json)(/.*)?$
+    path: ^/(passports(/.*)?|records|sync|verify/.*|me/.*|auth/.*|skills/.*|skill-requests(/.*)?|passport-requests|admin/.*|anchors/.*|issuer|health|docs|openapi\.json)$
     service: http://127.0.0.1:8013
   - hostname: aipassport.g1orga.dev
     service: http://127.0.0.1:8014

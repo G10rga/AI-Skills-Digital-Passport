@@ -213,6 +213,53 @@ class DecisionRequest(BaseModel):
     note: str = ""
 
 
+class RequestCodeRequest(BaseModel):
+    email: str
+
+
+class VerifyCodeRequest(BaseModel):
+    email: str
+    code: str
+
+
+class RequestCodeResponse(BaseModel):
+    model_config = Cfg
+    sent: bool
+    delivery: str  # smtp | dev
+    expires_in_minutes: int = Field(alias="expiresInMinutes")
+    dev_code: Optional[str] = Field(default=None, alias="devCode")  # demo only
+
+
+class PassportRequestCreate(BaseModel):
+    model_config = Cfg
+    student_id: str = Field(default="", alias="studentId")
+    first_name: str = Field(default="", alias="firstName")
+    last_name: str = Field(default="", alias="lastName")
+
+
+class PassportRequestOut(BaseModel):
+    model_config = Cfg
+    id: int
+    email: str
+    student_id: str = Field(default="", alias="studentId")
+    first_name: str = Field(default="", alias="firstName")
+    last_name: str = Field(default="", alias="lastName")
+    status: str  # READY | PENDING_STAFF | REJECTED
+    passport_id: str = Field(default="", alias="passportId")
+    note: str = ""
+    created_at: str = Field(alias="createdAt")
+    decided_at: str = Field(default="", alias="decidedAt")
+
+
+class NotificationOut(BaseModel):
+    model_config = Cfg
+    id: int
+    email: str
+    message: str
+    created_at: str = Field(alias="createdAt")
+    is_read: int = Field(default=0, alias="isRead")
+
+
 class VerifyDocumentRequest(BaseModel):
     """Body of POST /verify/document — content as printed on the PDF."""
     model_config = Cfg

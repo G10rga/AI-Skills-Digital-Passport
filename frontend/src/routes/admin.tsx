@@ -7,8 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { decideSkillRequest, listPassports, listRecords, listSkillRequests, resetDemoData, syncFromSheet } from "@/lib/api";
-import type { SkillRequest, SyncResult } from "@/lib/types";
+import { decidePassportRequest, decideSkillRequest, listPassportRequests, listPassports, listRecords, listSkillRequests, resetDemoData, syncFromSheet } from "@/lib/api";
+import type { PassportRequest, SkillRequest, SyncResult } from "@/lib/types";
 
 export const Route = createFileRoute("/admin")({
   ssr: false,
@@ -35,6 +35,16 @@ function AdminPage() {
   const qc = useQueryClient();
   const records = useQuery({ queryKey: ["records"], queryFn: listRecords });
   const skillRequests = useQuery({ queryKey: ["skill-requests"], queryFn: listSkillRequests });
+  const passportRequests = useQuery({ queryKey: ["passport-requests"], queryFn: listPassportRequests });
+  const decidePassport = useMutation({
+    mutationFn: ({ id, action }: { id: number; action: "approve" | "reject" }) => decidePassportRequest(id, action, notes[id] ?? ""),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["passport-requests"] });
+      qc.invalidateQueries({ queryKey: ["passports"] });
+      toast.success(r.status === "READY" ? `Passport ${r.passportId} is ready — student notified` : "Passport request rejected");
+    },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
+  });
   const [notes, setNotes] = useState<Record<number, string>>({});
   const decide = useMutation({
     mutationFn: ({ id, action }: { id: number; action: "approve" | "reject" }) => decideSkillRequest(id, action, notes[id] ?? ""),
@@ -107,6 +117,7 @@ function AdminPage() {
         <TabsList>
           <TabsTrigger value="records"><Sheet /> Skill records</TabsTrigger>
           <TabsTrigger value="passports">Passports</TabsTrigger>
+          <TabsTrigger value="prequests">Passport requests {(passportRequests.data ?? []).filter((r) => r.status === "PENDING_STAFF").length > 0 && `(${(passportRequests.data ?? []).filter((r) => r.status === "PENDING_STAFF").length})`}</TabsTrigger>
           <TabsTrigger value="requests">Skill requests {(skillRequests.data ?? []).filter((r) => r.status === "PENDING").length > 0 && `(${(skillRequests.data ?? []).filter((r) => r.status === "PENDING").length})`}</TabsTrigger>
         </TabsList>
         <TabsContent value="records" className="mt-4">
@@ -139,6 +150,36 @@ function AdminPage() {
                 })}
               </TableBody>
             </Table>
+          </div>
+        </TabsContent>
+        <TabsContent value="prequests" className="mt-4">
+          <div className="rounded-xl border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow><TableHead>Student</TableHead><TableHead>Student ID</TableHead><TableHead>Status</TableHead><TableHead>Passport</TableHead><TableHead>Note</TableHead><TableHead>Decision</TableHead></TableRow>
+              </TableHeader>
+              <TableBody>
+                {(passportRequests.data ?? []).map((r: PassportRequest) => (
+                  <TableRow key={r.id}>
+                    <TableCell>{r.email}<div className="text-xs text-muted-foreground">{r.firstName} {r.lastName}</div></TableCell>
+                    <TableCell className="font-mono text-xs">{r.studentId || "—"}</TableCell>
+                    <TableCell><span className={`rounded px-2 py-0.5 text-[10px] font-bold ${statusStyle[r.status] ?? "bg-brand text-brand-foreground"}`}>{r.status}</span></TableCell>
+                    <TableCell className="font-mono text-xs">{r.passportId || "—"}</TableCell>
+                    <TableCell><Input placeholder="Optional note…" value={notes[r.id] ?? r.note ?? ""} onChange={(e) => setNotes({ ...notes, [r.id]: e.target.value })} className="w-40" disabled={r.status !== "PENDING_STAFF"} /></TableCell>
+                    <TableCell>
+                      {r.status === "PENDING_STAFF" ? (
+                        <div className="flex gap-2">
+                          <Button size="sm" onClick={() => decidePassport.mutate({ id: r.id, action: "approve" })}>Fulfil</Button>
+                          <Button size="sm" variant="destructive" onClick={() => decidePassport.mutate({ id: r.id, action: "reject" })}>Reject</Button>
+                        </div>
+                      ) : <span className="text-xs text-muted-foreground">{r.decidedAt?.slice(0, 10)}</span>}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {(passportRequests.data ?? []).length === 0 && <p className="p-4 text-sm text-muted-foreground">No passport requests yet.</p>}
+            <p className="border-t border-border p-3 text-xs text-muted-foreground">Fulfil re-checks the sheet data for this student: if records now exist, the passport version is generated on the spot and the student is notified (in-app + email when SMTP is configured). If there is still no data, fulfil is refused — add the student's rows to the sheet first.</p>
           </div>
         </TabsContent>
         <TabsContent value="requests" className="mt-4">

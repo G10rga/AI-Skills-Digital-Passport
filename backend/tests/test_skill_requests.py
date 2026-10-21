@@ -15,7 +15,8 @@ def fresh():
 
 
 def token(email="btu-t-0001@example.org"):
-    return client.post("/auth/login", json={"email": email}).json()["token"]
+    code = client.post("/auth/request-code", json={"email": email}).json()["devCode"]
+    return client.post("/auth/verify-code", json={"email": email, "code": code}).json()["token"]
 
 
 def auth(email="btu-t-0001@example.org"):

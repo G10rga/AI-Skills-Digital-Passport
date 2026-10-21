@@ -4,10 +4,11 @@ import { useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { currentStudentEmail, getMyPassport, getSkillCatalogue, getSkillTest, listMySkillRequests, loginStudent, logoutStudent, submitProofRequest, submitTestRequest } from "@/lib/api";
+import { currentStudentEmail, getMyPassport, getMyPassportRequest, getSkillCatalogue, getSkillTest, listMySkillRequests, listNotifications, logoutStudent, requestPassport, requestVerificationCode, submitProofRequest, submitTestRequest, verifyAccountCode } from "@/lib/api";
 import type { SkillRequest } from "@/lib/types";
 import { toast } from "sonner";
 import { PassportView } from "@/components/passport/PassportView";
+import { useLang } from "@/lib/i18n";
 
 export const Route = createFileRoute("/me")({
   ssr: false,
@@ -39,35 +40,93 @@ function MePage() {
         </div>
         <Button variant="outline" onClick={() => { logoutStudent(); setEmail(null); qc.clear(); }}><LogOut /> Sign out</Button>
       </div>
-      {isLoading ? <p className="text-muted-foreground">Loading…</p> : data ? <><PassportView passport={data} /><SkillRequestSection owned={new Set(data.versions.at(-1)?.skills.map((x) => x.skillId) ?? [])} /></> : <p>No passport found for this account.</p>}
+      {isLoading ? <p className="text-muted-foreground">Loading…</p> : data?.versions.length ? <><PassportView passport={data} /><SkillRequestSection owned={new Set(data.versions.at(-1)?.skills.map((x) => x.skillId) ?? [])} /></> : <PassportRequestSection hasShell={!!data} />}
     </div>
   );
 }
 
 function Login({ onLogin }: { onLogin: (e: string) => void }) {
+  const { t } = useLang();
   const [value, setValue] = useState("btu-t-0001@example.org");
+  const [code, setCode] = useState("");
+  const [devCode, setDevCode] = useState<string | null>(null);
+  const [step, setStep] = useState<1 | 2>(1);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   return (
     <div className="mx-auto max-w-md px-4 py-20">
-      <h1 className="text-3xl">Sign in with BTU</h1>
-      <p className="mt-2 text-muted-foreground">Use your BTU university account to see your passport.</p>
-      <form
-        className="mt-8 space-y-3"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setBusy(true); setError("");
-          const r = await loginStudent(value);
+      <h1 className="text-3xl">{t("sign_in")}</h1>
+      <p className="mt-2 text-muted-foreground">{t("sign_in_sub")}</p>
+      {step === 1 ? (
+        <form className="mt-8 space-y-3" onSubmit={async (e) => {
+          e.preventDefault(); setBusy(true); setError("");
+          try {
+            const r = await requestVerificationCode(value);
+            setDevCode(r.devCode); setStep(2);
+          } catch { setError("Could not send the code. Is the backend running?"); }
           setBusy(false);
-          if (r) onLogin(r.email); else setError("No passport is linked to this BTU email.");
-        }}
-      >
-        <Input type="email" value={value} onChange={(e) => setValue(e.target.value)} placeholder="name@btu.edu.ge" required />
-        {error && <p className="text-sm text-destructive">{error}</p>}
-        <Button className="w-full" disabled={busy}>{busy ? "Signing in…" : "Continue with BTU account"}</Button>
-      </form>
-      <p className="mt-4 text-xs text-muted-foreground">Demo: any test email from the sheet works, e.g. btu-t-0002@example.org.</p>
+        }}>
+          <Input type="email" value={value} onChange={(e) => setValue(e.target.value)} placeholder={t("email_ph")} required />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button className="w-full" disabled={busy}>{busy ? "…" : t("send_code")}</Button>
+        </form>
+      ) : (
+        <form className="mt-8 space-y-3" onSubmit={async (e) => {
+          e.preventDefault(); setBusy(true); setError("");
+          const r = await verifyAccountCode(value, code);
+          setBusy(false);
+          if (r) onLogin(r.email); else setError("Incorrect or expired code.");
+        }}>
+          {devCode && <p className="rounded-md bg-secondary p-3 text-sm">{t("code_sent")} <b className="font-mono">{devCode}</b></p>}
+          <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder={t("code_ph")} inputMode="numeric" maxLength={6} required className="font-mono" />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button className="w-full" disabled={busy}>{busy ? "…" : t("verify_btn")}</Button>
+          <button type="button" className="text-xs text-muted-foreground underline" onClick={() => setStep(1)}>Use a different email</button>
+        </form>
+      )}
+      <p className="mt-4 text-xs text-muted-foreground">Demo: request a code for any test email from the sheet, e.g. btu-t-0002@example.org.</p>
     </div>
+  );
+}
+
+function PassportRequestSection({ hasShell }: { hasShell: boolean }) {
+  const { t } = useLang();
+  const qc = useQueryClient();
+  const [studentId, setStudentId] = useState("");
+  const status = useQuery({ queryKey: ["my-passport-request"], queryFn: getMyPassportRequest });
+  const notes = useQuery({ queryKey: ["my-notifications"], queryFn: listNotifications });
+  const submit = useMutation({
+    mutationFn: () => requestPassport(studentId),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["my-passport-request"] });
+      qc.invalidateQueries({ queryKey: ["me"] });
+      toast.success(r.status === "READY" ? `${t("passport_ready")} ${r.passportId}` : t("waiting_staff"));
+    },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
+  });
+  const r = status.data;
+  return (
+    <section className="mx-auto max-w-xl rounded-xl border border-border bg-card p-6">
+      <h2 className="text-2xl">{t("request_passport")}</h2>
+      <p className="mt-1 text-sm text-muted-foreground">{hasShell ? t("request_sub") : t("no_passport") + " " + t("request_sub")}</p>
+      {r?.status === "READY" ? (
+        <p className="mt-4 font-semibold text-success">{t("passport_ready")} {r.passportId}</p>
+      ) : r?.status === "PENDING_STAFF" ? (
+        <p className="mt-4 rounded-md bg-secondary p-3 text-sm font-semibold">{t("waiting_staff")}</p>
+      ) : (
+        <div className="mt-5 flex gap-2">
+          <Input placeholder={t("student_id_ph")} value={studentId} onChange={(e) => setStudentId(e.target.value)} />
+          <Button onClick={() => submit.mutate()} disabled={submit.isPending}>{t("request_btn")}</Button>
+        </div>
+      )}
+      {r?.status === "REJECTED" && <p className="mt-3 text-sm text-destructive">{r.note}</p>}
+      {(notes.data ?? []).length > 0 && (
+        <div className="mt-6">
+          <h3 className="font-display text-sm">{t("notifications")}</h3>
+          {(notes.data ?? []).map((n) => <p key={n.id} className="mt-1 text-sm text-muted-foreground">• {n.message}</p>)}
+        </div>
+      )}
+    </section>
   );
 }
 

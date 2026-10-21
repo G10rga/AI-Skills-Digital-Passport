@@ -16,10 +16,11 @@ from . import services
 from .anchor import make_anchor
 from .config import settings
 from .issuer import IssuerSigner
-from .models import (DecisionRequest, IssuerPublic, LoginRequest, LoginResponse, Passport,
-                     PassportSummary, SkillCatalogItem, SkillRecord, SkillRequestOut, SkillTest,
-                     SyncResult, TestQuestion, TestRequestSubmit, VerifyDocumentRequest,
-                     VerifyDocumentResult, VerifyResult)
+from .models import (DecisionRequest, IssuerPublic, LoginResponse, NotificationOut, Passport,
+                     PassportRequestCreate, PassportRequestOut, PassportSummary, RequestCodeRequest,
+                     RequestCodeResponse, SkillCatalogItem, SkillRecord, SkillRequestOut, SkillTest,
+                     SyncResult, TestQuestion, TestRequestSubmit, VerifyCodeRequest,
+                     VerifyDocumentRequest, VerifyDocumentResult, VerifyResult)
 from .security import Auth, make_token
 from .sheets import make_sheet_source
 from .store import Store, load_seed
@@ -89,13 +90,99 @@ def my_passport(email: str = Depends(auth.student_email)):
     return services.passport_model(store, row)
 
 
-@app.post("/auth/login", response_model=LoginResponse)
-def login(body: LoginRequest):
-    row = store.get_passport_by_email(body.email.strip())
-    if not row:
-        raise HTTPException(404, "No passport is linked to this BTU email")
-    return LoginResponse(email=row["email"],
-                         token=make_token(row["email"], settings.app_secret, settings.token_ttl_hours))
+def _code_hash(email: str, code: str) -> str:
+    from .canonical import sha256_hex
+    return sha256_hex(f"{email.lower()}:{code}:{settings.app_secret}")
+
+
+@app.post("/auth/request-code", response_model=RequestCodeResponse)
+def request_code(body: RequestCodeRequest):
+    """Step 1 of sign-in: email a 6-digit verification code. The account
+    must prove control of the email before any passport access/request."""
+    import secrets
+    from datetime import datetime, timedelta, timezone
+    from .mailer import delivery_mode, send_email
+    email = body.email.strip().lower()
+    if "@" not in email:
+        raise HTTPException(400, "Enter a valid email address")
+    code = f"{secrets.randbelow(1_000_000):06d}"
+    expires = datetime.now(timezone.utc) + timedelta(minutes=settings.verification_ttl_minutes)
+    store.save_code(email, _code_hash(email, code),
+                    expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    sent = send_email(settings, email, "BTU AI Skills Passport — verification code",
+                      f"Your verification code is {code}. "
+                      f"It expires in {settings.verification_ttl_minutes} minutes.")
+    mode = delivery_mode(settings)
+    return RequestCodeResponse(sent=True, delivery=mode,
+                               expiresInMinutes=settings.verification_ttl_minutes,
+                               devCode=code if mode == "dev" else None)
+
+
+@app.post("/auth/verify-code", response_model=LoginResponse)
+def verify_code(body: VerifyCodeRequest):
+    """Step 2: exchange the code for a *verified* session token."""
+    import hmac as _hmac
+    from datetime import datetime, timezone
+    email = body.email.strip().lower()
+    row = store.get_code(email)
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if not row or row["expires_at"] < now or row["attempts"] >= 5:
+        raise HTTPException(400, "Code expired or too many attempts — request a new code")
+    if not _hmac.compare_digest(row["code_hash"], _code_hash(email, body.code.strip())):
+        store.bump_code_attempts(email)
+        raise HTTPException(400, "Incorrect verification code")
+    store.delete_code(email)
+    return LoginResponse(email=email, token=make_token(
+        email, settings.app_secret, settings.token_ttl_hours, verified=True))
+
+
+# --------------------------------------------------------- passport requests
+@app.post("/passport-requests", response_model=PassportRequestOut, status_code=201)
+def request_passport(body: PassportRequestCreate, email: str = Depends(auth.student_email)):
+    sheet = make_sheet_source(settings) if settings.sheet_source != "seed" else None
+    req = services.submit_passport_request(store, email, body.student_id.strip(),
+                                           body.first_name.strip(), body.last_name.strip(),
+                                           ctx, sheet)
+    return PassportRequestOut.model_validate(req)
+
+
+@app.get("/me/passport-request", response_model=PassportRequestOut | None)
+def my_passport_request(email: str = Depends(auth.student_email)):
+    req = store.latest_passport_request(email)
+    return PassportRequestOut.model_validate(req) if req else None
+
+
+@app.get("/me/notifications", response_model=list[NotificationOut])
+def my_notifications(email: str = Depends(auth.student_email)):
+    return store.list_notifications(email)
+
+
+@app.get("/admin/passport-requests", response_model=list[PassportRequestOut],
+         dependencies=[Depends(auth.require_admin)])
+def admin_passport_requests():
+    return store.list_passport_requests()
+
+
+@app.post("/admin/passport-requests/{request_id}/approve", response_model=PassportRequestOut,
+          dependencies=[Depends(auth.require_admin)])
+def approve_passport_request(request_id: int, body: DecisionRequest):
+    try:
+        sheet = make_sheet_source(settings) if settings.sheet_source != "seed" else None
+        req = services.fulfil_passport_request(store, request_id, body.note, ctx, sheet)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return PassportRequestOut.model_validate(req)
+
+
+@app.post("/admin/passport-requests/{request_id}/reject", response_model=PassportRequestOut,
+          dependencies=[Depends(auth.require_admin)])
+def reject_passport_request_ep(request_id: int, body: DecisionRequest):
+    try:
+        req = services.reject_passport_request(store, request_id, body.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return PassportRequestOut.model_validate(req)
 
 
 # ---------------------------------------------------------------- records

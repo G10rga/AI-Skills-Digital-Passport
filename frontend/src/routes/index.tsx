@@ -8,6 +8,7 @@ import { Stamp, categoryLabel } from "@/components/passport/Stamp";
 import { PassportTag } from "@/components/SiteHeader";
 import seed from "@/data/records.json";
 import type { SkillCategory, SkillRecord } from "@/lib/types";
+import { useLang } from "@/lib/i18n";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -92,6 +93,7 @@ const attacks = [
 ];
 
 function Home() {
+  const { t } = useLang();
   return (
     <div>
       <section className="bg-ink text-ink-foreground">
@@ -99,21 +101,17 @@ function Home() {
           <div>
             <PassportTag />
             <h1 className="mt-6 text-5xl leading-[0.9] md:text-7xl">
-              AI SKILLS
+              {t("hero_title_1")}
               <br />
-              <span className="font-sans font-light">DIGITAL PASSPORT</span>
+              <span className="font-sans font-light">{t("hero_title_2")}</span>
             </h1>
-            <p className="mt-6 max-w-md text-lg opacity-80">
-              One permanent, verifiable record of every AI skill a BTU student earns — issued once,
-              updated as a new version for every new skill, and impossible to fabricate: each version is
-              fingerprinted with SHA-256, signed by BTU, and anchored on the blockchain.
-            </p>
+            <p className="mt-6 max-w-md text-lg opacity-80">{t("hero_sub")}</p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Button size="lg" className="bg-brand text-brand-foreground hover:bg-brand/90" asChild>
-                <Link to="/me">Open my passport <ArrowRight /></Link>
+                <Link to="/me">{t("open_my_passport")} <ArrowRight /></Link>
               </Button>
               <Button size="lg" variant="outline" className="border-ink-foreground/30 bg-transparent hover:bg-sidebar-accent hover:text-ink-foreground" asChild>
-                <Link to="/verify" search={{ code: undefined }}><ShieldCheck /> Verify a passport</Link>
+                <Link to="/verify" search={{ code: undefined }}><ShieldCheck /> {t("verify_a_passport")}</Link>
               </Button>
             </div>
             <p className="mt-6 font-mono text-xs opacity-60">
@@ -141,7 +139,7 @@ function Home() {
       </section>
 
       <section className="mx-auto max-w-7xl px-4 py-20">
-        <h2 className="text-4xl text-brand">HOW BLOCKCHAIN VERIFICATION WORKS</h2>
+        <h2 className="text-4xl text-brand">{t("how_it_works")}</h2>
         <p className="mt-4 max-w-3xl text-muted-foreground">
           A PDF on its own proves nothing — anyone can edit one. Trust comes from three independent
           checks that a forged document cannot pass at the same time: the content fingerprint, BTU's

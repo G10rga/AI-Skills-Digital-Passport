@@ -367,6 +367,103 @@ def reject_request(store, request_id: int, note: str = "") -> dict:
     return store.decide_request(request_id, "REJECTED", note, now_iso())
 
 
+def find_passport_for_student(store, email: str, student_id: str = "") -> Optional[dict]:
+    return (store.get_passport_by_email(email)
+            or (store.get_passport_by_student_id(student_id) if student_id else None))
+
+
+def generate_passport_version(store, passport: dict, ctx,
+                              sheet: Optional[SheetSource] = None) -> bool:
+    """Issue a version from sheet records not yet on the passport.
+    Used when a student requests a passport that BTU data already
+    covers but that was never issued. Returns True if a version exists
+    or was created."""
+    versions = store.get_versions(passport["passport_id"])
+    if versions:
+        return True
+    candidates, seen = [], set()
+    for r in store.list_records():
+        if r["passportId"] != passport["passport_id"]:
+            continue
+        if any(not r.get(f) for f in REQUIRED) or r["studentId"] != passport["student_id"]:
+            continue
+        if r["recordId"] in seen or r["skillId"] in {c["skillId"] for c in candidates}:
+            continue
+        seen.add(r["recordId"])
+        candidates.append(r)
+    if not candidates:
+        return False
+    now = now_iso()
+    version = issue_version(store, passport, 1, [to_skill(r) for r in candidates], now, ctx)
+    write_back = []
+    for r in candidates:
+        store.update_record_sync(r["recordId"], "SYNCED", "V1", sheet_timestamp(now), None)
+        write_back.append({"recordId": r["recordId"], "_sheetRow": r.get("sheetRow"),
+                           "syncStatus": "SYNCED", "syncedVersion": "V1",
+                           "syncedAt": sheet_timestamp(now), "syncNotes": None})
+    if sheet is not None:
+        try:
+            sheet.write_back(write_back)
+        except Exception:
+            pass
+    return True
+
+
+def submit_passport_request(store, email: str, student_id: str, first_name: str,
+                            last_name: str, ctx, sheet: Optional[SheetSource] = None) -> dict:
+    """Check the database first: passport ready (or generatable) ->
+    READY immediately; no data at all -> PENDING_STAFF for BTU staff."""
+    passport = find_passport_for_student(store, email, student_id)
+    if passport and generate_passport_version(store, passport, ctx, sheet):
+        req = store.create_passport_request({
+            "email": email, "student_id": student_id or passport["student_id"],
+            "first_name": first_name, "last_name": last_name, "status": "READY",
+            "passport_id": passport["passport_id"], "note": "Passport found and ready",
+            "created_at": now_iso(), "decided_at": now_iso()})
+        return req
+    pending = store.latest_passport_request(email)
+    if pending and pending["status"] == "PENDING_STAFF":
+        return pending
+    return store.create_passport_request({
+        "email": email, "student_id": student_id, "first_name": first_name,
+        "last_name": last_name, "status": "PENDING_STAFF", "passport_id": "",
+        "note": "", "created_at": now_iso(), "decided_at": ""})
+
+
+def fulfil_passport_request(store, request_id: int, note: str, ctx,
+                            sheet: Optional[SheetSource] = None) -> dict:
+    req = store.get_passport_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] != "PENDING_STAFF":
+        raise ValueError(f"Request already {req['status'].lower()}")
+    passport = find_passport_for_student(store, req["email"], req["student_id"])
+    if not passport or not generate_passport_version(store, passport, ctx, sheet):
+        raise ValueError("No student data in the sheet yet — add/verify the student's "
+                         "records first, then approve again")
+    store.add_notification(req["email"],
+                           f"Your AI Skills Digital Passport {passport['passport_id']} is ready.",
+                           now_iso())
+    from .mailer import send_email
+    send_email(ctx.settings, req["email"], "Your BTU AI Skills Passport is ready",
+               f"Your AI Skills Digital Passport {passport['passport_id']} is ready. "
+               "Sign in to view and download it.")
+    return store.decide_passport_request(request_id, "READY", note, now_iso(),
+                                         passport["passport_id"])
+
+
+def reject_passport_request(store, request_id: int, note: str = "") -> dict:
+    req = store.get_passport_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] != "PENDING_STAFF":
+        raise ValueError(f"Request already {req['status'].lower()}")
+    store.add_notification(req["email"],
+                           "Your passport request was declined. "
+                           + (note or "Please contact BTU staff."), now_iso())
+    return store.decide_passport_request(request_id, "REJECTED", note, now_iso())
+
+
 def request_out(store, r: dict):
     from .models import SkillRequestOut
     sync_status = None

@@ -128,6 +128,27 @@ export interface SkillRequest {
   recordSyncStatus: string | null;
 }
 
+export interface PassportRequest {
+  id: number;
+  email: string;
+  studentId: string;
+  firstName: string;
+  lastName: string;
+  status: "READY" | "PENDING_STAFF" | "REJECTED";
+  passportId: string;
+  note: string;
+  createdAt: string;
+  decidedAt: string;
+}
+
+export interface AppNotification {
+  id: number;
+  email: string;
+  message: string;
+  createdAt: string;
+  isRead: number;
+}
+
 export interface SyncResult {
   processed: number;
   synced: number;
