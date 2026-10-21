@@ -80,3 +80,13 @@ app/store.py      Postgres/SQLite store app/services.py sync / issue / verify (p
 app/security.py   admin key + student tokens
 app/main.py       FastAPI endpoints     tests/          pytest suite
 ```
+
+## Student skill requests
+
+`GET /skills/catalogue` + `GET /skills/{skillId}/test` (5 scenario
+questions per stamp category in `app/assessments.py`, graded server-side,
+pass 70%) or proof upload (`POST /skill-requests/proof`, SHA-256 evidence
+fingerprint) create PENDING requests. Admins approve/reject in the Admin
+→ Skill requests tab; approval writes a `NOT SYNCED` sheet record (and
+appends to the live Google Sheet/XLSX when configured), so the normal
+sync issues it as a new anchored version. Tests: `tests/test_skill_requests.py`.

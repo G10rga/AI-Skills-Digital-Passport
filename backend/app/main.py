@@ -9,15 +9,16 @@ from __future__ import annotations
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import services
 from .anchor import make_anchor
 from .config import settings
 from .issuer import IssuerSigner
-from .models import (IssuerPublic, LoginRequest, LoginResponse, Passport,
-                     PassportSummary, SkillRecord, SyncResult, VerifyDocumentRequest,
+from .models import (DecisionRequest, IssuerPublic, LoginRequest, LoginResponse, Passport,
+                     PassportSummary, SkillCatalogItem, SkillRecord, SkillRequestOut, SkillTest,
+                     SyncResult, TestQuestion, TestRequestSubmit, VerifyDocumentRequest,
                      VerifyDocumentResult, VerifyResult)
 from .security import Auth, make_token
 from .sheets import make_sheet_source
@@ -119,6 +120,99 @@ def reset():
     store.reset()
     services.seed(store, load_seed(settings.seed_file), ctx)
     return {"reset": True, "passports": len(store.list_passports())}
+
+
+# ---------------------------------------------------------- skill requests
+@app.get("/skills/catalogue", response_model=list[SkillCatalogItem])
+def skill_catalogue():
+    return services.skill_catalogue(store)
+
+
+@app.get("/skills/{skill_id}/test", response_model=SkillTest)
+def skill_test(skill_id: str):
+    from .assessments import PASS_MARK, QUIZZES
+    item = services.catalogue_item(store, skill_id)
+    if not item:
+        raise HTTPException(404, f"Unknown skill {skill_id}")
+    return SkillTest(
+        skillId=item["skillId"], skillName=item["skillName"],
+        skillCategory=item["skillCategory"], passMark=PASS_MARK,
+        questions=[TestQuestion(id=q["id"], question=q["question"], options=q["options"])
+                   for q in QUIZZES[item["skillCategory"]]])
+
+
+def _student_passport(email: str) -> dict:
+    row = store.get_passport_by_email(email)
+    if not row:
+        raise HTTPException(404, "No passport is linked to this BTU email")
+    return row
+
+
+@app.post("/skill-requests/test", response_model=SkillRequestOut, status_code=201)
+def submit_test(body: TestRequestSubmit, email: str = Depends(auth.student_email)):
+    try:
+        req = services.submit_test_request(store, _student_passport(email),
+                                           body.skill_id, body.answers, body.description)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
+
+
+@app.post("/skill-requests/proof", response_model=SkillRequestOut, status_code=201)
+async def submit_proof(skillId: str = Form(...), description: str = Form(""),
+                       evidenceUrl: str = Form(""),
+                       file: UploadFile | None = File(default=None),
+                       email: str = Depends(auth.student_email)):
+    passport = _student_passport(email)
+    evidence_name, evidence_hash = "", ""
+    if file is not None and file.filename:
+        raw = await file.read()
+        if len(raw) > 10 * 1024 * 1024:
+            raise HTTPException(400, "Proof file too large (max 10 MB)")
+        from .canonical import sha256_hex
+        evidence_hash = sha256_hex(raw)
+        settings.upload_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename)
+        (settings.upload_dir / f"{passport['passport_id']}-{skillId}-{safe}").write_bytes(raw)
+        evidence_name = file.filename
+    try:
+        req = services.submit_proof_request(store, passport, skillId, description,
+                                            evidence_name, evidence_hash, evidenceUrl)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
+
+
+@app.get("/me/skill-requests", response_model=list[SkillRequestOut])
+def my_skill_requests(email: str = Depends(auth.student_email)):
+    return [services.request_out(store, r) for r in store.list_requests(email)]
+
+
+@app.get("/admin/skill-requests", response_model=list[SkillRequestOut],
+         dependencies=[Depends(auth.require_admin)])
+def admin_skill_requests():
+    return [services.request_out(store, r) for r in store.list_requests()]
+
+
+@app.post("/admin/skill-requests/{request_id}/approve", response_model=SkillRequestOut,
+          dependencies=[Depends(auth.require_admin)])
+def approve_skill_request(request_id: int, body: DecisionRequest):
+    try:
+        sheet = make_sheet_source(settings) if settings.sheet_source != "seed" else None
+        req = services.approve_request(store, request_id, body.note, sheet)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
+
+
+@app.post("/admin/skill-requests/{request_id}/reject", response_model=SkillRequestOut,
+          dependencies=[Depends(auth.require_admin)])
+def reject_skill_request(request_id: int, body: DecisionRequest):
+    try:
+        req = services.reject_request(store, request_id, body.note)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
 
 
 # ------------------------------------------------------------ verification

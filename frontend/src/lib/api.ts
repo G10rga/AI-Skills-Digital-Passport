@@ -11,7 +11,10 @@ import type {
   PassportSkill,
   PassportSummary,
   PassportVersion,
+  SkillCatalogItem,
   SkillRecord,
+  SkillRequest,
+  SkillTest,
   SyncResult,
   VerifyResult,
 } from "./types";
@@ -31,7 +34,8 @@ const REMOTE = import.meta.env["MODE"] === "test"
 const TOKEN_KEY = "btu-passport-token";
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers: Record<string, string> = { "Content-Type": "application/json", ...(init.headers as Record<string, string>) };
+  const isForm = typeof FormData !== "undefined" && init.body instanceof FormData;
+  const headers: Record<string, string> = { ...(isForm ? {} : { "Content-Type": "application/json" }), ...(init.headers as Record<string, string>) };
   const adminKey = import.meta.env["VITE_ADMIN_API_KEY"] as string | undefined;
   if (adminKey) headers["X-Admin-Key"] = adminKey;
   const token = typeof window !== "undefined" ? window.localStorage.getItem(TOKEN_KEY) : null;
@@ -319,4 +323,52 @@ export function currentStudentEmail(): string | null {
 export function logoutStudent() {
   window.localStorage.removeItem(AUTH_KEY);
   window.localStorage.removeItem(TOKEN_KEY);
+}
+
+// ---------- skill requests (backend-only feature) ----------
+const requireRemote = () => { if (!REMOTE) throw new Error("Skill requests need the Python backend (set VITE_API_BASE_URL)"); };
+
+/** GET /skills/catalogue */
+export async function getSkillCatalogue(): Promise<SkillCatalogItem[]> {
+  requireRemote();
+  return apiFetch<SkillCatalogItem[]>("/skills/catalogue");
+}
+
+/** GET /skills/:skillId/test — questions only, answers graded server-side */
+export async function getSkillTest(skillId: string): Promise<SkillTest> {
+  requireRemote();
+  return apiFetch<SkillTest>(`/skills/${skillId}/test`);
+}
+
+/** POST /skill-requests/test */
+export async function submitTestRequest(skillId: string, answers: Record<string, number>): Promise<SkillRequest> {
+  requireRemote();
+  return apiFetch<SkillRequest>("/skill-requests/test", { method: "POST", body: JSON.stringify({ skillId, answers }) });
+}
+
+/** POST /skill-requests/proof (multipart) */
+export async function submitProofRequest(skillId: string, description: string, evidenceUrl: string, file: File | null): Promise<SkillRequest> {
+  requireRemote();
+  const fd = new FormData();
+  fd.set("skillId", skillId); fd.set("description", description); fd.set("evidenceUrl", evidenceUrl);
+  if (file) fd.set("file", file);
+  return apiFetch<SkillRequest>("/skill-requests/proof", { method: "POST", body: fd });
+}
+
+/** GET /me/skill-requests */
+export async function listMySkillRequests(): Promise<SkillRequest[]> {
+  requireRemote();
+  return apiFetch<SkillRequest[]>("/me/skill-requests");
+}
+
+/** GET /admin/skill-requests */
+export async function listSkillRequests(): Promise<SkillRequest[]> {
+  requireRemote();
+  return apiFetch<SkillRequest[]>("/admin/skill-requests");
+}
+
+/** POST /admin/skill-requests/:id/approve|reject */
+export async function decideSkillRequest(id: number, action: "approve" | "reject", note = ""): Promise<SkillRequest> {
+  requireRemote();
+  return apiFetch<SkillRequest>(`/admin/skill-requests/${id}/${action}`, { method: "POST", body: JSON.stringify({ note }) });
 }

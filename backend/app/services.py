@@ -252,3 +252,125 @@ def summaries(store) -> list[PassportSummary]:
 
 def record_models(store) -> list[SkillRecord]:
     return [SkillRecord.model_validate(r) for r in store.list_records()]
+
+
+# ---------------------------------------------------------- skill requests
+def skill_catalogue(store) -> list[dict]:
+    """Distinct skills BTU already awards (from the sheet), by skillId."""
+    seen: dict[str, dict] = {}
+    for r in store.list_records():
+        seen.setdefault(r["skillId"], {
+            "skillId": r["skillId"], "skillName": r["skillName"],
+            "skillCategory": r["skillCategory"], "badgeCode": r["badgeCode"],
+            "skillDescription": r["skillDescription"]})
+    return sorted(seen.values(), key=lambda s: (s["skillCategory"], s["skillName"]))
+
+
+def catalogue_item(store, skill_id: str) -> Optional[dict]:
+    return next((s for s in skill_catalogue(store) if s["skillId"] == skill_id), None)
+
+
+def _validate_new_request(store, passport: dict, skill_id: str) -> dict:
+    item = catalogue_item(store, skill_id)
+    if not item:
+        raise ValueError(f"Unknown skill {skill_id}")
+    versions = store.get_versions(passport["passport_id"])
+    owned = {s["skill_id"] for v in versions for s in v["skills"]}
+    if skill_id in owned:
+        raise ValueError("Skill already on your passport")
+    pending = [q for q in store.list_requests(passport["email"])
+               if q["skill_id"] == skill_id and q["status"] == "PENDING"]
+    if pending:
+        raise ValueError("You already have a pending request for this skill")
+    return item
+
+
+def submit_test_request(store, passport: dict, skill_id: str,
+                        answers: dict, description: str = "") -> dict:
+    from .assessments import grade
+    item = _validate_new_request(store, passport, skill_id)
+    score, passed, _ = grade(item["skillCategory"], answers)
+    if not passed:
+        raise ValueError(f"Test not passed: {score}% (need 70%). You can retake it.")
+    return store.create_request({
+        "passport_id": passport["passport_id"], "student_id": passport["student_id"],
+        "student_email": passport["email"], "skill_id": item["skillId"],
+        "skill_name": item["skillName"], "skill_category": item["skillCategory"],
+        "badge_code": item["badgeCode"], "method": "TEST", "test_score": score,
+        "description": description, "status": "PENDING", "created_at": now_iso()})
+
+
+def submit_proof_request(store, passport: dict, skill_id: str, description: str,
+                         evidence_name: str = "", evidence_hash: str = "",
+                         evidence_url: str = "") -> dict:
+    item = _validate_new_request(store, passport, skill_id)
+    if not (evidence_name or evidence_url):
+        raise ValueError("Upload a proof file or provide an evidence URL")
+    return store.create_request({
+        "passport_id": passport["passport_id"], "student_id": passport["student_id"],
+        "student_email": passport["email"], "skill_id": item["skillId"],
+        "skill_name": item["skillName"], "skill_category": item["skillCategory"],
+        "badge_code": item["badgeCode"], "method": "PROOF", "test_score": None,
+        "evidence_name": evidence_name, "evidence_hash": evidence_hash,
+        "evidence_url": evidence_url, "description": description,
+        "status": "PENDING", "created_at": now_iso()})
+
+
+def next_record_id(store) -> str:
+    nums = []
+    for r in store.list_records():
+        rid = r["recordId"]
+        if rid.startswith("REC-") and rid[4:].isdigit():
+            nums.append(int(rid[4:]))
+    return f"REC-{(max(nums) + 1) if nums else 1:04d}"
+
+
+def approve_request(store, request_id: int, note: str = "",
+                    sheet: Optional[SheetSource] = None) -> dict:
+    """Approval writes a NOT SYNCED row into the sheet dataset (and the
+    real sheet when a live source is configured). The existing Sync then
+    turns it into a new anchored passport version — same pipeline as
+    admin-entered skills, nothing bypasses the sheet."""
+    req = store.get_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] != "PENDING":
+        raise ValueError(f"Request already {req['status'].lower()}")
+    passport = store.get_passport(req["passport_id"])
+    item = catalogue_item(store, req["skill_id"]) or {}
+    record = {
+        "studentId": passport["student_id"], "firstName": passport["first_name"],
+        "lastName": passport["last_name"], "email": passport["email"],
+        "program": passport["program"], "educationLevel": passport["education_level"],
+        "passportId": passport["passport_id"], "firstIssued": passport["first_issued"],
+        "studentStatus": passport["student_status"], "recordId": next_record_id(store),
+        "skillId": req["skill_id"], "skillName": req["skill_name"],
+        "skillCategory": req["skill_category"], "badgeCode": req["badge_code"],
+        "skillDescription": item.get("skillDescription", ""),
+        "dateEarned": now_iso()[:10], "syncStatus": "NOT SYNCED",
+        "syncedVersion": None, "syncedAt": None, "syncNotes": None}
+    store.upsert_record(record)
+    if sheet is not None:
+        try:
+            sheet.append_record(record)
+        except Exception:
+            pass  # DB mirror already holds the row; sheet append is best-effort
+    return store.decide_request(request_id, "APPROVED", note, now_iso(), record["recordId"])
+
+
+def reject_request(store, request_id: int, note: str = "") -> dict:
+    req = store.get_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] != "PENDING":
+        raise ValueError(f"Request already {req['status'].lower()}")
+    return store.decide_request(request_id, "REJECTED", note, now_iso())
+
+
+def request_out(store, r: dict):
+    from .models import SkillRequestOut
+    sync_status = None
+    if r.get("record_id"):
+        rec = next((x for x in store.list_records() if x["recordId"] == r["record_id"]), None)
+        sync_status = rec["syncStatus"] if rec else None
+    return SkillRequestOut.model_validate({**r, "record_sync_status": sync_status})

@@ -153,6 +153,66 @@ class LoginResponse(BaseModel):
     token_type: str = Field(default="Bearer", alias="tokenType")
 
 
+class SkillCatalogItem(BaseModel):
+    model_config = Cfg
+    skill_id: str = Field(alias="skillId")
+    skill_name: str = Field(alias="skillName")
+    skill_category: str = Field(alias="skillCategory")
+    badge_code: str = Field(alias="badgeCode")
+    skill_description: str = Field(alias="skillDescription")
+
+
+class TestQuestion(BaseModel):
+    id: str
+    question: str
+    options: list[str]
+
+
+class SkillTest(BaseModel):
+    model_config = Cfg
+    skill_id: str = Field(alias="skillId")
+    skill_name: str = Field(alias="skillName")
+    skill_category: str = Field(alias="skillCategory")
+    pass_mark: int = Field(alias="passMark")
+    questions: list[TestQuestion]
+
+
+class TestRequestSubmit(BaseModel):
+    model_config = Cfg
+    skill_id: str = Field(alias="skillId")
+    answers: dict[str, int]
+    description: str = ""
+
+
+class SkillRequestOut(BaseModel):
+    model_config = Cfg
+    id: int
+    passport_id: str = Field(alias="passportId")
+    student_id: str = Field(alias="studentId")
+    student_email: str = Field(alias="studentEmail")
+    skill_id: str = Field(alias="skillId")
+    skill_name: str = Field(alias="skillName")
+    skill_category: str = Field(alias="skillCategory")
+    badge_code: str = Field(alias="badgeCode")
+    method: str  # TEST | PROOF
+    test_score: Optional[int] = Field(default=None, alias="testScore")
+    evidence_name: str = Field(default="", alias="evidenceName")
+    evidence_hash: str = Field(default="", alias="evidenceHash")
+    evidence_url: str = Field(default="", alias="evidenceUrl")
+    description: str = ""
+    status: str  # PENDING | APPROVED | REJECTED
+    admin_note: str = Field(default="", alias="adminNote")
+    record_id: str = Field(default="", alias="recordId")
+    created_at: str = Field(alias="createdAt")
+    decided_at: str = Field(default="", alias="decidedAt")
+    # joined live from the sheet record once approved (NOT SYNCED/SYNCED…)
+    record_sync_status: Optional[str] = Field(default=None, alias="recordSyncStatus")
+
+
+class DecisionRequest(BaseModel):
+    note: str = ""
+
+
 class VerifyDocumentRequest(BaseModel):
     """Body of POST /verify/document — content as printed on the PDF."""
     model_config = Cfg

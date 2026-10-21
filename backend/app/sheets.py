@@ -46,6 +46,14 @@ class LocalJsonSheet:
     def fetch(self) -> list[dict]:
         return _clean(load_seed(self.path))
 
+    def append_record(self, record: dict) -> None:
+        if not self.writeback_enabled:
+            return
+        rows = load_seed(self.path)
+        if record["recordId"] not in {r["recordId"] for r in rows}:
+            rows.append({k: record.get(k) for k in COLUMNS})
+            self.path.write_text(json.dumps(rows, indent=1, ensure_ascii=False), encoding="utf-8")
+
     def write_back(self, updates: list[dict]) -> None:
         if not self.writeback_enabled:
             return
@@ -81,6 +89,14 @@ class XlsxSheet:
             r["_sheetRow"] = i
             rows.append(r)
         return _clean(rows)
+
+    def append_record(self, record: dict) -> None:
+        if not self.writeback_enabled:
+            return
+        wb = self._book()
+        ws = wb.active
+        ws.append([record.get(k) or "" for k in COLUMNS])
+        wb.save(self.path)
 
     def write_back(self, updates: list[dict]) -> None:
         if not self.writeback_enabled:
@@ -141,6 +157,12 @@ class GoogleSheetsSheet:
             r["_sheetRow"] = header_row + offset
             rows.append(r)
         return _clean(rows)
+
+    def append_record(self, record: dict) -> None:
+        self._api().values().append(
+            spreadsheetId=self.spreadsheet_id, range=self.sheet_range,
+            valueInputOption="RAW",
+            body={"values": [[record.get(k) or "" for k in COLUMNS]]}).execute()
 
     def write_back(self, updates: list[dict]) -> None:
         data = []

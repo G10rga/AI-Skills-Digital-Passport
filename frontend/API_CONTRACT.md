@@ -37,3 +37,22 @@ All responses are JSON. Dates: `YYYY-MM-DD`; timestamps: ISO 8601 UTC.
 - Verification must also prove the issuer is BTU (signature / issuer DID `did:web:btu.edu.ge`) and say whether the version is the latest.
 - `verificationCode` format used by the UI: `{passport digits}-V{n}-{first 8 hash chars}`; any unique code works.
 - Must scale to 5,000+ passports with batch sync.
+
+## Student skill requests (added after the initial contract)
+
+Students can request a skill BTU has not recorded yet. Nothing reaches a
+passport without **admin approval + a normal sync** — approval only writes
+a `NOT SYNCED` row into the sheet dataset (and appends to the live Google
+Sheet when configured), exactly like an admin-entered row.
+
+| Function | Method & path | Auth | Notes |
+|---|---|---|---|
+| `getSkillCatalogue` | `GET /skills/catalogue` | public | distinct skills from the sheet |
+| `getSkillTest` | `GET /skills/{skillId}/test` | public | questions only; grading is server-side, pass = 70% |
+| `submitTestRequest` | `POST /skill-requests/test` `{skillId, answers}` | student | creates a PENDING request only if the test passes |
+| `submitProofRequest` | `POST /skill-requests/proof` (multipart: file and/or evidenceUrl + description) | student | file SHA-256 stored as evidence fingerprint (max 10 MB) |
+| `listMySkillRequests` | `GET /me/skill-requests` | student | includes live sheet sync status once approved |
+| `listSkillRequests` / `decideSkillRequest` | `GET /admin/skill-requests`, `POST /admin/skill-requests/{id}/approve\|reject` `{note}` | admin | approve creates the sheet record (`REC-…`, `NOT SYNCED`) |
+
+Rules: a student cannot request a skill already on their passport or
+with another PENDING request; rejected requests create no sheet record.

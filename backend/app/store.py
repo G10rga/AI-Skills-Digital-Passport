@@ -41,8 +41,17 @@ CREATE TABLE IF NOT EXISTS records(
   skill_category TEXT DEFAULT '', badge_code TEXT DEFAULT '', skill_description TEXT DEFAULT '',
   date_earned TEXT DEFAULT '', sync_status TEXT, synced_version TEXT, synced_at TEXT,
   sync_notes TEXT, sheet_row INT);
+CREATE TABLE IF NOT EXISTS skill_requests(
+  id INTEGER PRIMARY KEY, passport_id TEXT NOT NULL, student_id TEXT DEFAULT '',
+  student_email TEXT DEFAULT '', skill_id TEXT NOT NULL, skill_name TEXT DEFAULT '',
+  skill_category TEXT DEFAULT '', badge_code TEXT DEFAULT '', method TEXT NOT NULL,
+  test_score INT, evidence_name TEXT DEFAULT '', evidence_hash TEXT DEFAULT '',
+  evidence_url TEXT DEFAULT '', description TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'PENDING', admin_note TEXT DEFAULT '',
+  record_id TEXT DEFAULT '', created_at TEXT NOT NULL, decided_at TEXT DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_versions_passport ON versions(passport_id, version);
 CREATE INDEX IF NOT EXISTS idx_records_passport ON records(passport_id, sync_status);
+CREATE INDEX IF NOT EXISTS idx_requests_student ON skill_requests(student_email, status);
 """
 
 PG_SCHEMA = SQLITE_SCHEMA.replace(
@@ -123,7 +132,7 @@ class Store:
             return vid
 
     def reset(self) -> None:
-        for table in ("version_skills", "versions", "records", "passports"):
+        for table in ("version_skills", "versions", "records", "passports", "skill_requests"):
             self._run(f"DELETE FROM {table}")
 
     # ---- passports -------------------------------------------------
@@ -227,6 +236,39 @@ class Store:
         row = self._one("SELECT COUNT(*) c FROM records WHERE passport_id=? AND sync_status NOT IN"
                         " ('SYNCED','DUPLICATE')", (passport_id,))
         return int(row["c"]) if row else 0
+
+    # ---- student skill requests --------------------------------------
+    def create_request(self, r: dict) -> dict:
+        cols = ["passport_id", "student_id", "student_email", "skill_id", "skill_name",
+                "skill_category", "badge_code", "method", "test_score", "evidence_name",
+                "evidence_hash", "evidence_url", "description", "status", "created_at"]
+        vals = tuple(r.get(c, "") if c != "test_score" else r.get(c) for c in cols)
+        sql = f"INSERT INTO skill_requests({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
+        with self._lock:
+            cur = self.db.cursor()
+            if self.kind == "postgres":
+                cur.execute(self._sql(sql) + " RETURNING id", vals)
+                rid = cur.fetchone()["id"]
+            else:
+                cur.execute(sql, vals)
+                rid = cur.lastrowid
+            self.db.commit()
+        return self.get_request(rid)
+
+    def get_request(self, request_id: int) -> Optional[dict]:
+        return self._one("SELECT * FROM skill_requests WHERE id=?", (request_id,))
+
+    def list_requests(self, student_email: str | None = None) -> list[dict]:
+        if student_email:
+            return self._all("SELECT * FROM skill_requests WHERE lower(student_email)=lower(?)"
+                             " ORDER BY id DESC", (student_email,))
+        return self._all("SELECT * FROM skill_requests ORDER BY id DESC")
+
+    def decide_request(self, request_id: int, status: str, note: str, decided_at: str,
+                       record_id: str = "") -> Optional[dict]:
+        self._run("UPDATE skill_requests SET status=?,admin_note=?,decided_at=?,record_id=?"
+                  " WHERE id=?", (status, note, decided_at, record_id, request_id))
+        return self.get_request(request_id)
 
 
 def load_seed(path: Path) -> list[dict]:

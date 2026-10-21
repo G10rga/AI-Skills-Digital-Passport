@@ -26,6 +26,7 @@ class Settings:
     issuer_did: str = field(default_factory=lambda: os.getenv("ISSUER_DID", "did:web:btu.edu.ge"))
     issuer_wallet: str = field(default_factory=lambda: os.getenv("ISSUER_WALLET_ADDRESS", "0xB7U0000000000000000000000000000000A15C"))
     issuer_key_file: Path = field(default_factory=lambda: Path(os.getenv("ISSUER_KEY_FILE", BACKEND_DIR / "data" / "issuer_key.pem")))
+    upload_dir: Path = field(default_factory=lambda: Path(os.getenv("UPLOAD_DIR", BACKEND_DIR / "data" / "uploads")))
 
     # blockchain anchoring: "simulated" (deterministic, offline, demo) | "web3" (real chain)
     anchor_mode: str = field(default_factory=lambda: os.getenv("ANCHOR_MODE", "simulated"))

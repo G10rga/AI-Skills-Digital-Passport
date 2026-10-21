@@ -89,6 +89,45 @@ export interface VerifyResult {
   recomputedHash?: string;
 }
 
+export interface SkillCatalogItem {
+  skillId: string;
+  skillName: string;
+  skillCategory: SkillCategory;
+  badgeCode: string;
+  skillDescription: string;
+}
+
+export interface SkillTest {
+  skillId: string;
+  skillName: string;
+  skillCategory: SkillCategory;
+  passMark: number;
+  questions: { id: string; question: string; options: string[] }[];
+}
+
+export interface SkillRequest {
+  id: number;
+  passportId: string;
+  studentId: string;
+  studentEmail: string;
+  skillId: string;
+  skillName: string;
+  skillCategory: string;
+  badgeCode: string;
+  method: "TEST" | "PROOF";
+  testScore: number | null;
+  evidenceName: string;
+  evidenceHash: string;
+  evidenceUrl: string;
+  description: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  adminNote: string;
+  recordId: string;
+  createdAt: string;
+  decidedAt: string;
+  recordSyncStatus: string | null;
+}
+
 export interface SyncResult {
   processed: number;
   synced: number;

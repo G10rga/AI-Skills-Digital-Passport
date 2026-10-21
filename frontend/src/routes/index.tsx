@@ -22,6 +22,7 @@ export const Route = createFileRoute("/")({
 });
 
 const records = seed as SkillRecord[];
+const distinctSkills = new Set(records.map((r) => r.skillId)).size;
 const cats: SkillCategory[] = ["AI Skill", "AI Applied Skill", "AI Advanced Skill"];
 
 // Accurate numbers, computed from the actual demo dataset (not hard-coded claims).
@@ -221,7 +222,7 @@ function Home() {
         </div>
         <p className="mt-6 max-w-2xl text-sm text-muted-foreground">
           The three stamp types represent different learning formats and depths of engagement
-          ({stats[2].n} distinct skills in the current catalogue). They do not form a mandatory sequence —
+          ({distinctSkills} distinct skills in the current catalogue). They do not form a mandatory sequence —
           a student's passport simply collects whichever verified skills BTU records for them.
         </p>
       </section>
