@@ -1,0 +1,21 @@
+# aipassport.g1orga.dev — internal reverse proxy.
+# Cloudflare Tunnel terminates public HTTPS and forwards here (127.0.0.1:8081).
+# Caddy is only bound to localhost: the tunnel is the only way in.
+#
+#   /api/*  -> Python backend  (127.0.0.1:8000, /api prefix stripped)
+#   /*      -> frontend        (127.0.0.1:3001, Nitro node server)
+
+http://127.0.0.1:8081 {
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3001
+	}
+
+	log {
+		output stderr
+	}
+}

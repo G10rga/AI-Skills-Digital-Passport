@@ -1,0 +1,15 @@
+[Unit]
+Description=BTU AI Skills Passport — Python backend (FastAPI)
+After=network.target
+
+[Service]
+# Adjust user + paths to where the repo is cloned on the server.
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ai-skills-digital-passport
+EnvironmentFile=/home/ubuntu/ai-skills-digital-passport/deploy/.env.production
+ExecStart=/home/ubuntu/ai-skills-digital-passport/.venv/bin/python backend/run.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

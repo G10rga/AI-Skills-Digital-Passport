@@ -1,0 +1,20 @@
+[project]
+name = "btu-ai-skills-passport-backend"
+version = "1.0.0"
+description = "BTU AI Skills Digital Passport — pure-Python backend (FastAPI + SQLite)"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "cryptography>=42",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+sheets = ["google-api-python-client>=2", "google-auth>=2", "openpyxl>=3.1"]
+chain = ["web3>=7"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

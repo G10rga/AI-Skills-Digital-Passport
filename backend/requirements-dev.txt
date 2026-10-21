@@ -1,0 +1,7 @@
+-r requirements.txt
+pytest>=8
+httpx>=0.27
+# optional, only for the matching deployment mode:
+# google-api-python-client, google-auth  (SHEET_SOURCE=google)
+# openpyxl                                (SHEET_SOURCE=xlsx)
+# web3                                    (ANCHOR_MODE=web3)

@@ -1,0 +1,12 @@
+# Add this entry to the ingress: list in ~/.cloudflared/config.yml on the
+# Ubuntu server (same file that routes teoria / your other g1orga.dev sites).
+# IMPORTANT: it must go ABOVE the final catch-all rule
+#   - service: http_status:404
+#
+# Then create the DNS record and reload the tunnel:
+#   cloudflared tunnel route dns <YOUR_TUNNEL_NAME> aipassport.g1orga.dev
+#   cloudflared tunnel ingress validate
+#   sudo systemctl restart cloudflared
+
+  - hostname: aipassport.g1orga.dev
+    service: http://127.0.0.1:8081
