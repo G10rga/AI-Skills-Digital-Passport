@@ -92,7 +92,7 @@ function AdminPage() {
     onSuccess: (r) => {
       if (r.sync) setLast(r.sync);
       qc.invalidateQueries();
-      toast.success(`Excel imported: ${r.imported} new · ${r.updated} updated · ${r.skipped} skipped${r.sync ? ` · ${r.sync.synced} skills synced` : ""}`);
+      toast.success(`Excel imported: ${r.imported} new · ${r.updated} updated · ${r.skipped} skipped${r.newStudents ? ` · ${r.newStudents} new student(s) got passports` : ""}${r.sync ? ` · ${r.sync.synced} skills synced` : ""}`);
     },
     onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
   });

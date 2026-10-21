@@ -203,6 +203,7 @@ export interface ExcelUploadResult {
   imported: number;
   updated: number;
   skipped: number;
+  newStudents?: number;
   sync: SyncResult | null;
 }
 

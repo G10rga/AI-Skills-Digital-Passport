@@ -166,15 +166,97 @@ def ingest_sheet(store, sheet: SheetSource) -> list[dict]:
     return rows
 
 
+def next_passport_id(store) -> str:
+    """Next free BTU-AI-NNNNNN, scanning passports and imported records."""
+    import re as _re
+    nums = []
+    for p in store.list_passports():
+        m = _re.fullmatch(r"BTU-AI-(\d+)", p["passport_id"] or "")
+        if m:
+            nums.append(int(m.group(1)))
+    for r in store.list_records():
+        m = _re.fullmatch(r"BTU-AI-(\d+)", r.get("passportId") or "")
+        if m:
+            nums.append(int(m.group(1)))
+    return f"BTU-AI-{(max(nums) + 1) if nums else 1:06d}"
+
+
+def assign_missing_passport_ids(store, rows: list[dict]) -> list[dict]:
+    """Uploaded sheets for brand-new students have no Passport ID yet.
+    Give each such student (grouped by Student ID) the passport they
+    would have been assigned by BTU, reusing an existing one if the
+    student is already known. Mutates and returns the rows."""
+    by_student: dict[str, str] = {}
+    for r in rows:
+        sid = r.get("studentId") or ""
+        if not sid:
+            continue
+        if r.get("passportId"):
+            by_student.setdefault(sid, r["passportId"])
+            continue
+        if sid not in by_student:
+            known = store.get_passport_by_student_id(sid)
+            if known:
+                by_student[sid] = known["passport_id"]
+            else:
+                existing = next((x for x in store.list_records()
+                                 if x["studentId"] == sid and x.get("passportId")), None)
+                by_student[sid] = existing["passportId"] if existing else next_passport_id(store)
+                # reserve the id so the next new student gets the following one
+                store.register_passport({**r, "passportId": by_student[sid],
+                                         "firstIssued": r.get("firstIssued") or now_iso()[:10]})
+        r["passportId"] = by_student[sid]
+        if not r.get("firstIssued"):
+            r["firstIssued"] = now_iso()[:10]
+    return rows
+
+
+def ensure_passport_for_records(store, email: str, student_id: str = "") -> Optional[dict]:
+    """Create the passport identity from imported sheet records when a
+    student has records but no passport yet (e.g. an Excel upload with a
+    blank Passport ID). Returns the passport row, or None if the student
+    has no records at all."""
+    passport = find_passport_for_student(store, email, student_id)
+    if passport:
+        return passport
+    records = store.list_records()
+    match = next((r for r in records
+                  if (email and r.get("email", "").lower() == email.lower())
+                  or (student_id and r.get("studentId") == student_id)), None)
+    if not match:
+        return None
+    sid = match["studentId"]
+    siblings = [r for r in records if r["studentId"] == sid]
+    passport_id = next((r["passportId"] for r in siblings if r.get("passportId")), "")
+    first_issued = next((r["firstIssued"] for r in siblings if r.get("firstIssued")), "") \
+        or now_iso()[:10]
+    identity = {**match, "passportId": passport_id or next_passport_id(store),
+                "firstIssued": first_issued}
+    store.register_passport(identity)
+    store.update_records_passport_id(sid, identity["passportId"], first_issued)
+    return store.get_passport(identity["passportId"])
+
+
 def import_excel(store, ctx, data: bytes, do_sync: bool = True) -> dict:
     """Admin Excel upload: parse the workbook, ingest its rows, then
     (by default) run the normal sync so new NOT SYNCED rows are issued
-    as new passport versions through the exact same pipeline."""
+    as new passport versions through the exact same pipeline. Students
+    whose rows have no Passport ID yet are assigned one automatically."""
     from .sheets import parse_xlsx_bytes
     rows, total = parse_xlsx_bytes(data)
+    new_students = len({r["studentId"] for r in rows if r.get("studentId") and not r.get("passportId")})
+    rows = assign_missing_passport_ids(store, rows)
     counts = ingest_rows(store, rows)
     sync_result = sync(store, ctx) if do_sync else None
+    if do_sync:
+        # Rows marked SYNCED for a passport that was never issued (typical
+        # for a first upload) don't flow through sync — issue them now.
+        for pid in {r["passportId"] for r in rows if r.get("passportId")}:
+            p = store.get_passport(pid)
+            if p:
+                generate_passport_version(store, p, ctx)
     return {"rows": len(rows), "skipped": total - len(rows), **counts,
+            "newStudents": new_students,
             "sync": sync_result.model_dump(by_alias=True) if sync_result else None}
 
 
@@ -707,7 +789,7 @@ def submit_passport_request(store, email: str, student_id: str, first_name: str,
                             last_name: str, ctx, sheet: Optional[SheetSource] = None) -> dict:
     """Check the database first: passport ready (or generatable) ->
     READY immediately; no data at all -> PENDING_STAFF for BTU staff."""
-    passport = find_passport_for_student(store, email, student_id)
+    passport = ensure_passport_for_records(store, email, student_id)
     if passport and generate_passport_version(store, passport, ctx, sheet):
         req = store.create_passport_request({
             "email": email, "student_id": student_id or passport["student_id"],
@@ -731,7 +813,7 @@ def fulfil_passport_request(store, request_id: int, note: str, ctx,
         raise ValueError("Request not found")
     if req["status"] != "PENDING_STAFF":
         raise ValueError(f"Request already {req['status'].lower()}")
-    passport = find_passport_for_student(store, req["email"], req["student_id"])
+    passport = ensure_passport_for_records(store, req["email"], req["student_id"])
     if not passport or not generate_passport_version(store, passport, ctx, sheet):
         raise ValueError("No student data in the sheet yet — add/verify the student's "
                          "records first, then approve again")

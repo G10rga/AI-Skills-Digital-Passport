@@ -82,6 +82,51 @@ def test_upload_without_sync_only_ingests():
     assert rec["syncStatus"] is None
 
 
+def auth(email):
+    code = client.post("/auth/request-code", json={"email": email}).json()["devCode"]
+    tok = client.post("/auth/verify-code", json={"email": email, "code": code}).json()["token"]
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def test_upload_new_student_without_passport_id_gets_passport_automatically():
+    # the reported case: brand-new student, Passport ID + First Issued blank,
+    # row already marked SYNCED in the uploaded file
+    row = ["BTU-T-06701", "Lasha", "Giorgadze", "lasha.giorgadze.2@btu.edu.ge",
+           "Computer science and artificial inteligence", "Bachelor's", None, None,
+           "Active", "REC-06701", "SKL-001", "AI Literacy", "AI Skill",
+           '=IF(M2="AI Skill","BDG-AI-001","BDG-AI-003")',
+           "Fundamentals of AI capabilities, limitations, and responsible use.",
+           "2026-09-18", "SYNCED", "V1", "2026-10-17 10:00 UTC", None]
+    r = upload(workbook([row]))
+    assert r.status_code == 200, r.text
+    assert r.json()["newStudents"] == 1
+    summaries = {p["studentId"]: p for p in client.get("/passports").json()}
+    assert "BTU-T-06701" in summaries and summaries["BTU-T-06701"]["latestVersion"] == 1
+    # the student can immediately claim it — no staff step needed
+    h = auth("lasha.giorgadze.2@btu.edu.ge")
+    req = client.post("/passport-requests", headers=h, json={})
+    assert req.status_code == 201 and req.json()["status"] == "READY"
+    mine = client.get("/me/passport", headers=h).json()
+    assert mine["studentId"] == "BTU-T-06701" and len(mine["versions"]) == 1
+    assert mine["versions"][0]["skills"][0]["skillName"] == "AI Literacy"
+
+
+def test_passport_request_heals_record_imported_without_passport_id():
+    # data that reached the DB before auto-assignment existed (blank ID)
+    from app.main import store
+    store.upsert_record({"studentId": "BTU-T-7777", "firstName": "Ana", "lastName": "K",
+                         "email": "ana.k@example.org", "passportId": "", "firstIssued": "",
+                         "recordId": "REC-7777", "skillId": "SKL-001", "skillName": "AI Literacy",
+                         "skillCategory": "AI Skill", "badgeCode": "BDG-AI-001",
+                         "skillDescription": "Fundamentals", "dateEarned": "2026-10-01",
+                         "syncStatus": "SYNCED"})
+    h = auth("ana.k@example.org")
+    req = client.post("/passport-requests", headers=h, json={})
+    assert req.status_code == 201, req.text
+    assert req.json()["status"] == "READY" and req.json()["passportId"].startswith("BTU-AI-")
+    assert client.get("/me/passport", headers=h).json()["versions"][0]["skills"]
+
+
 def test_upload_rejects_non_xlsx_and_garbage():
     assert upload(b"a,b,c", filename="data.csv").status_code == 400
     assert upload(b"not a workbook").status_code == 400

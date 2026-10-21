@@ -352,6 +352,19 @@ class Store:
         self._run("UPDATE records SET sync_status=?,synced_version=?,synced_at=?,sync_notes=?"
                   " WHERE record_id=?", (status, version, synced_at, notes, record_id))
 
+    def update_records_passport_id(self, student_id: str, passport_id: str,
+                                   first_issued: str = "") -> int:
+        """Backfill identity onto records imported without one (e.g. an
+        uploaded sheet for a brand-new student). Only touches rows that
+        have no Passport ID yet."""
+        rows = self._all("SELECT record_id FROM records WHERE student_id=?"
+                         " AND (passport_id='' OR passport_id IS NULL)", (student_id,))
+        for r in rows:
+            self._run("UPDATE records SET passport_id=?,"
+                      " first_issued=CASE WHEN first_issued='' THEN ? ELSE first_issued END"
+                      " WHERE record_id=?", (passport_id, first_issued, r["record_id"]))
+        return len(rows)
+
     def pending_count(self, passport_id: str) -> int:
         row = self._one("SELECT COUNT(*) c FROM records WHERE passport_id=? AND sync_status NOT IN"
                         " ('SYNCED','DUPLICATE')", (passport_id,))
