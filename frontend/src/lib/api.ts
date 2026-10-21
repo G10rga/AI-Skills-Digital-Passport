@@ -24,7 +24,10 @@ export const API_BASE = import.meta.env["VITE_API_BASE_URL"] ?? "/api";
  * Unset = local mock below, unchanged. Optional VITE_ADMIN_API_KEY is sent
  * as X-Admin-Key for the admin endpoints.
  */
-const REMOTE = (import.meta.env["VITE_API_BASE_URL"] as string | undefined)?.replace(/\/$/, "");
+// Tests always run against the mock, even if a developer .env points at a backend.
+const REMOTE = import.meta.env["MODE"] === "test"
+  ? undefined
+  : (import.meta.env["VITE_API_BASE_URL"] as string | undefined)?.replace(/\/$/, "");
 const TOKEN_KEY = "btu-passport-token";
 
 async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
