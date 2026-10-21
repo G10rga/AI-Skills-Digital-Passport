@@ -77,7 +77,7 @@ class Store:
             except ImportError as e:
                 raise RuntimeError("DATABASE_URL set but psycopg missing: pip install 'psycopg[binary]'") from e
             self.kind = "postgres"
-            self.db = psycopg.connect(database_url, row_factory=dict_row)
+            self.db = psycopg.connect(database_url, row_factory=dict_row, autocommit=True)
             schema = PG_SCHEMA
         else:
             assert path is not None
@@ -96,40 +96,56 @@ class Store:
 
     def _run(self, sql: str, params: tuple = ()) -> None:
         with self._lock:
-            cur = self.db.cursor()
-            cur.execute(self._sql(sql), params)
-            self.db.commit()
+            try:
+                cur = self.db.cursor()
+                cur.execute(self._sql(sql), params)
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
 
     def _one(self, sql: str, params: tuple = ()) -> Optional[dict]:
         with self._lock:
-            cur = self.db.cursor()
-            cur.execute(self._sql(sql), params)
-            row = cur.fetchone()
-            return dict(row) if row else None
+            try:
+                cur = self.db.cursor()
+                cur.execute(self._sql(sql), params)
+                row = cur.fetchone()
+                return dict(row) if row else None
+            except Exception:
+                self.db.rollback()
+                raise
 
     def _all(self, sql: str, params: tuple = ()) -> list[dict]:
         with self._lock:
-            cur = self.db.cursor()
-            cur.execute(self._sql(sql), params)
-            return [dict(r) for r in cur.fetchall()]
+            try:
+                cur = self.db.cursor()
+                cur.execute(self._sql(sql), params)
+                return [dict(r) for r in cur.fetchall()]
+            except Exception:
+                self.db.rollback()
+                raise
 
     def _insert_version(self, passport_id, version, issued_at, doc_hash, code,
                         tx_hash, network, block_number, signature) -> int:
         sql = ("INSERT INTO versions(passport_id,version,issued_at,document_hash,verification_code,"
                "tx_hash,network,block_number,issuer_signature) VALUES (?,?,?,?,?,?,?,?,?)")
         with self._lock:
-            cur = self.db.cursor()
-            if self.kind == "postgres":
-                cur.execute(self._sql(sql) + " RETURNING id",
-                            (passport_id, version, issued_at, doc_hash, code, tx_hash,
-                             network, block_number, signature))
-                vid = cur.fetchone()["id"]
-            else:
-                cur.execute(sql, (passport_id, version, issued_at, doc_hash, code, tx_hash,
-                                  network, block_number, signature))
-                vid = cur.lastrowid
-            self.db.commit()
-            return vid
+            try:
+                cur = self.db.cursor()
+                if self.kind == "postgres":
+                    cur.execute(self._sql(sql) + " RETURNING id",
+                                (passport_id, version, issued_at, doc_hash, code, tx_hash,
+                                 network, block_number, signature))
+                    vid = cur.fetchone()["id"]
+                else:
+                    cur.execute(sql, (passport_id, version, issued_at, doc_hash, code, tx_hash,
+                                      network, block_number, signature))
+                    vid = cur.lastrowid
+                self.db.commit()
+                return vid
+            except Exception:
+                self.db.rollback()
+                raise
 
     def reset(self) -> None:
         for table in ("version_skills", "versions", "records", "passports", "skill_requests"):
@@ -245,14 +261,18 @@ class Store:
         vals = tuple(r.get(c, "") if c != "test_score" else r.get(c) for c in cols)
         sql = f"INSERT INTO skill_requests({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
         with self._lock:
-            cur = self.db.cursor()
-            if self.kind == "postgres":
-                cur.execute(self._sql(sql) + " RETURNING id", vals)
-                rid = cur.fetchone()["id"]
-            else:
-                cur.execute(sql, vals)
-                rid = cur.lastrowid
-            self.db.commit()
+            try:
+                cur = self.db.cursor()
+                if self.kind == "postgres":
+                    cur.execute(self._sql(sql) + " RETURNING id", vals)
+                    rid = cur.fetchone()["id"]
+                else:
+                    cur.execute(sql, vals)
+                    rid = cur.lastrowid
+                self.db.commit()
+            except Exception:
+                self.db.rollback()
+                raise
         return self.get_request(rid)
 
     def get_request(self, request_id: int) -> Optional[dict]:
