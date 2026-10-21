@@ -51,6 +51,9 @@ class Settings:
 
     # account verification (email code before passport access / requests)
     require_verified_account: bool = field(default_factory=lambda: _bool("REQUIRE_VERIFIED_ACCOUNT", True))
+    # LOCAL DEV ONLY: return the code in the API response. Never enable in
+    # production - anyone could then impersonate any student.
+    allow_dev_verification_codes: bool = field(default_factory=lambda: _bool("ALLOW_DEV_VERIFICATION_CODES", False))
     verification_ttl_minutes: int = field(default_factory=lambda: int(os.getenv("VERIFICATION_TTL_MINUTES", "10")))
     smtp_host: str = field(default_factory=lambda: os.getenv("SMTP_HOST", ""))
     smtp_port: int = field(default_factory=lambda: int(os.getenv("SMTP_PORT", "587")))

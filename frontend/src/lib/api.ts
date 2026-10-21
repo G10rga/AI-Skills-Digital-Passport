@@ -338,10 +338,10 @@ export function logoutStudent() {
 }
 
 // ---------- passport requests ----------
-/** POST /passport-requests — DB check first: READY if data exists, else staff queue */
-export async function requestPassport(studentId: string): Promise<PassportRequest> {
+/** POST /passport-requests — checks the DB by your verified account email only */
+export async function requestPassport(): Promise<PassportRequest> {
   requireRemote();
-  return apiFetch<PassportRequest>("/passport-requests", { method: "POST", body: JSON.stringify({ studentId }) });
+  return apiFetch<PassportRequest>("/passport-requests", { method: "POST", body: JSON.stringify({}) });
 }
 
 export async function getMyPassportRequest(): Promise<PassportRequest | null> {

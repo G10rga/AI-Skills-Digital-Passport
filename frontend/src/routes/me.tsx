@@ -77,7 +77,7 @@ function Login({ onLogin }: { onLogin: (e: string) => void }) {
           setBusy(false);
           if (r) onLogin(r.email); else setError("Incorrect or expired code.");
         }}>
-          {devCode && <p className="rounded-md bg-secondary p-3 text-sm">{t("code_sent")} <b className="font-mono">{devCode}</b></p>}
+          <p className="rounded-md bg-secondary p-3 text-sm">{t("code_sent")}</p>
           <Input value={code} onChange={(e) => setCode(e.target.value)} placeholder={t("code_ph")} inputMode="numeric" maxLength={6} required className="font-mono" />
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button className="w-full" disabled={busy}>{busy ? "…" : t("verify_btn")}</Button>
@@ -92,11 +92,10 @@ function Login({ onLogin }: { onLogin: (e: string) => void }) {
 function PassportRequestSection({ hasShell }: { hasShell: boolean }) {
   const { t } = useLang();
   const qc = useQueryClient();
-  const [studentId, setStudentId] = useState("");
   const status = useQuery({ queryKey: ["my-passport-request"], queryFn: getMyPassportRequest });
   const notes = useQuery({ queryKey: ["my-notifications"], queryFn: listNotifications });
   const submit = useMutation({
-    mutationFn: () => requestPassport(studentId),
+    mutationFn: () => requestPassport(),
     onSuccess: (r) => {
       qc.invalidateQueries({ queryKey: ["my-passport-request"] });
       qc.invalidateQueries({ queryKey: ["me"] });
@@ -114,8 +113,7 @@ function PassportRequestSection({ hasShell }: { hasShell: boolean }) {
       ) : r?.status === "PENDING_STAFF" ? (
         <p className="mt-4 rounded-md bg-secondary p-3 text-sm font-semibold">{t("waiting_staff")}</p>
       ) : (
-        <div className="mt-5 flex gap-2">
-          <Input placeholder={t("student_id_ph")} value={studentId} onChange={(e) => setStudentId(e.target.value)} />
+        <div className="mt-5">
           <Button onClick={() => submit.mutate()} disabled={submit.isPending}>{t("request_btn")}</Button>
         </div>
       )}

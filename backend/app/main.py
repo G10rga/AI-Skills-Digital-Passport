@@ -110,13 +110,20 @@ def request_code(body: RequestCodeRequest):
     store.save_code(email, _code_hash(email, code),
                     expires.strftime("%Y-%m-%dT%H:%M:%SZ"),
                     datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
-    sent = send_email(settings, email, "BTU AI Skills Passport — verification code",
-                      f"Your verification code is {code}. "
-                      f"It expires in {settings.verification_ttl_minutes} minutes.")
     mode = delivery_mode(settings)
-    return RequestCodeResponse(sent=True, delivery=mode,
-                               expiresInMinutes=settings.verification_ttl_minutes,
-                               devCode=code if mode == "dev" else None)
+    if mode == "smtp":
+        send_email(settings, email, "BTU AI Skills Passport — verification code",
+                   f"Your verification code is {code}. "
+                   f"It expires in {settings.verification_ttl_minutes} minutes.")
+        return RequestCodeResponse(sent=True, delivery=mode,
+                                   expiresInMinutes=settings.verification_ttl_minutes)
+    if settings.allow_dev_verification_codes:
+        print(f"[dev-mail] verification code for {email}: {code}")
+        return RequestCodeResponse(sent=True, delivery="dev",
+                                   expiresInMinutes=settings.verification_ttl_minutes,
+                                   devCode=code)
+    raise HTTPException(503, "Email delivery is not configured on this server. "
+                             "Set SMTP_HOST/SMTP_USER/SMTP_PASSWORD/SMTP_FROM and restart the API.")
 
 
 @app.post("/auth/verify-code", response_model=LoginResponse)

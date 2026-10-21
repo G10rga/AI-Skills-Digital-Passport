@@ -96,3 +96,16 @@ def test_passport_request_rejected_notifies():
 
 def test_passport_request_requires_verified_account():
     assert client.post("/passport-requests", json={}).status_code == 401
+
+
+def test_code_is_never_returned_without_smtp_or_dev_flag():
+    """Production security: no SMTP + dev codes off -> 503, never a leaked code."""
+    from app.main import settings
+    old_host, old_dev = settings.smtp_host, settings.allow_dev_verification_codes
+    settings.smtp_host, settings.allow_dev_verification_codes = "", False
+    try:
+        r = client.post("/auth/request-code", json={"email": "victim@example.org"})
+        assert r.status_code == 503
+        assert "devCode" not in r.text
+    finally:
+        settings.smtp_host, settings.allow_dev_verification_codes = old_host, old_dev

@@ -71,6 +71,20 @@ EOF
   echo "Generated ${APP_HOME}/.env (ADMIN_API_KEY inside — needed below for the frontend build)"
 fi
 
+# Verification emails: codes are only sent by email, never returned by the
+# API. Fill in SMTP_* in /opt/aipassport/.env (Gmail: smtp.gmail.com:587 +
+# an App Password) or sign-in stays disabled with a clear 503 message.
+if ! grep -q "ALLOW_DEV_VERIFICATION_CODES" "${APP_HOME}/.env"; then
+  cat >> "${APP_HOME}/.env" <<'EOF'
+ALLOW_DEV_VERIFICATION_CODES=false
+# SMTP_HOST=smtp.gmail.com
+# SMTP_PORT=587
+# SMTP_USER=
+# SMTP_PASSWORD=
+# SMTP_FROM=
+EOF
+fi
+
 # Self-hosted PostgreSQL (same convention as Teoria): dedicated role+db,
 # DATABASE_URL in /opt/aipassport/.env. Idempotent; safe to re-run.
 set -a; source "${APP_HOME}/.env"; set +a
