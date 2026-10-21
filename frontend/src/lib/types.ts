@@ -198,6 +198,14 @@ export interface AppNotification {
   isRead: number;
 }
 
+export interface ExcelUploadResult {
+  rows: number;
+  imported: number;
+  updated: number;
+  skipped: number;
+  sync: SyncResult | null;
+}
+
 export interface SyncResult {
   processed: number;
   synced: number;

@@ -502,6 +502,15 @@ export async function getWalletPass(): Promise<unknown> {
   return apiFetch<unknown>("/me/passport/wallet");
 }
 
+/** POST /admin/records/upload (multipart .xlsx) — ingest + sync */
+export async function uploadExcel(file: File, sync = true): Promise<import("./types").ExcelUploadResult> {
+  requireRemote();
+  const fd = new FormData();
+  fd.set("file", file);
+  fd.set("sync", String(sync));
+  return apiFetch("/admin/records/upload", { method: "POST", body: fd });
+}
+
 /** GET /admin/needs-review + release/reject */
 export async function listNeedsReview(): Promise<ReviewFlag[]> {
   requireRemote();

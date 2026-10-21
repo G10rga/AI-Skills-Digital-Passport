@@ -216,6 +216,36 @@ def list_records():
     return services.record_models(store)
 
 
+@app.post("/admin/records/upload", dependencies=[Depends(auth.require_admin)])
+async def upload_excel(file: UploadFile = File(...), sync: str = Form("true")):
+    """Upload a .xlsx workbook (same layout as the BTU test data: human
+    headers on row 4, columns A-T, or camelCase headers on any of the
+    first 10 rows). Rows are ingested like a sheet pull, then synced."""
+    if not (file.filename or "").lower().endswith(".xlsx"):
+        raise HTTPException(400, "Only .xlsx files are supported")
+    raw = await file.read()
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 10 MB)")
+    if not raw:
+        raise HTTPException(400, "Empty file")
+    try:
+        result = services.import_excel(store, ctx, raw,
+                                       do_sync=str(sync).lower() in {"1", "true", "yes", "on"})
+    except Exception as e:
+        raise HTTPException(400, f"Could not parse Excel file: {e}")
+    # keep an audit copy of every import
+    try:
+        from datetime import datetime, timezone
+        dest = settings.upload_dir / "excel-imports"
+        dest.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", file.filename)
+        (dest / f"{stamp}-{safe}").write_bytes(raw)
+    except Exception:
+        pass
+    return result
+
+
 @app.post("/sync", response_model=SyncResult, dependencies=[Depends(auth.require_admin)])
 def sync():
     """Pull the sheet (Google / XLSX / seed), validate, append new

@@ -57,6 +57,19 @@ Sheet when configured), exactly like an admin-entered row.
 Rules: a student cannot request a skill already on their passport or
 with another PENDING request; rejected requests create no sheet record.
 
+## Excel data upload
+
+`POST /admin/records/upload` (admin, multipart `file` + `sync=true|false`,
+.xlsx only, max 10 MB) — parses the BTU workbook layout (human-readable
+headers on row 4, columns A–T; camelCase headers on any of the first 10
+rows also accepted; formula/blank Badge codes are derived from the skill
+category), ingests rows exactly like a sheet pull (new passports
+registered, existing records updated, Q–T never overwritten), then runs
+the normal sync unless `sync=false`. Returns
+`{rows, imported, updated, skipped, sync}`. The Admin page's
+**Upload Excel** button uses it and reports the counts. An audit copy of
+each file is kept under `data/uploads/excel-imports/`.
+
 ## Expansion (stub-first: LLM/IPFS/wallet behind interfaces)
 
 Request statuses widened to `SUBMITTED | AI_REVIEWED | NEEDS_TEST |

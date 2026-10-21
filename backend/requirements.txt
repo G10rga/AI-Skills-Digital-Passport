@@ -4,3 +4,4 @@ pydantic>=2
 cryptography>=42
 python-multipart>=0.0.9
 psycopg[binary]>=3.2
+openpyxl>=3.1

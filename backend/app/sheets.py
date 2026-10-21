@@ -33,6 +33,106 @@ class SheetSource(Protocol):
 NULLABLE = ("syncStatus", "syncedVersion", "syncedAt", "syncNotes")
 
 
+HEADER_ALIASES = {
+    "student id": "studentId", "studentid": "studentId",
+    "first name": "firstName", "firstname": "firstName",
+    "last name": "lastName", "lastname": "lastName",
+    "btu email (test)": "email", "btu email": "email", "email": "email",
+    "program": "program", "programme": "program",
+    "education level": "educationLevel", "educationlevel": "educationLevel",
+    "passport id (existing)": "passportId", "passport id": "passportId", "passportid": "passportId",
+    "first issued (existing)": "firstIssued", "first issued": "firstIssued", "firstissued": "firstIssued",
+    "student status": "studentStatus", "studentstatus": "studentStatus",
+    "record id": "recordId", "recordid": "recordId",
+    "skill id": "skillId", "skillid": "skillId",
+    "skill name": "skillName", "skillname": "skillName",
+    "skill category": "skillCategory", "skillcategory": "skillCategory",
+    "badge/stamp code": "badgeCode", "badge code": "badgeCode", "badgecode": "badgeCode",
+    "skill description": "skillDescription", "skilldescription": "skillDescription",
+    "date earned": "dateEarned", "dateearned": "dateEarned",
+    "passport sync status": "syncStatus", "sync status": "syncStatus", "syncstatus": "syncStatus",
+    "synced passport version": "syncedVersion", "synced version": "syncedVersion", "syncedversion": "syncedVersion",
+    "synced at (utc)": "syncedAt", "synced at": "syncedAt", "syncedat": "syncedAt",
+    "sync error / notes": "syncNotes", "sync notes": "syncNotes", "syncnotes": "syncNotes",
+}
+
+BADGE_BY_CATEGORY = {"AI Skill": "BDG-AI-001", "AI Applied Skill": "BDG-AI-002",
+                     "AI Advanced Skill": "BDG-AI-003"}
+
+
+def _cell_str(v, column: str = "") -> str:
+    import datetime as _dt
+    if v is None:
+        return ""
+    if isinstance(v, _dt.datetime):
+        return v.strftime("%Y-%m-%d %H:%M UTC") if column == "syncedAt" else v.strftime("%Y-%m-%d")
+    if isinstance(v, _dt.date):
+        return v.isoformat()
+    return str(v)
+
+
+def parse_xlsx_bytes(data: bytes) -> tuple[list[dict], int]:
+    """Parse an uploaded .xlsx into SkillRecord dicts.
+
+    Finds the header row in the first 10 rows ('Record ID' / 'Student ID'),
+    maps human-readable BTU headers or camelCase keys to COLUMNS, and falls
+    back to the positional hackathon layout (header row 4, A-T). Formula
+    badge cells (=IF(category...)) are resolved from the skill category.
+    Returns (clean rows, total non-empty data rows seen)."""
+    import io
+    try:
+        import openpyxl
+    except ImportError as e:
+        raise RuntimeError("Excel upload requires `pip install openpyxl`") from e
+    ws = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=False).active
+
+    header_idx, col_map = None, {}
+    total_rows = list(ws.iter_rows(values_only=True))
+    for i, values in enumerate(total_rows[:10]):
+        if not values:
+            continue
+        mapping = {}
+        for j, cell in enumerate(values):
+            key = HEADER_ALIASES.get(str(cell).strip().lower()) if cell else None
+            if key:
+                mapping[j] = key
+        if "recordId" in mapping.values() or "studentId" in mapping.values():
+            header_idx, col_map = i, mapping
+            break
+
+    rows, total = [], 0
+    if header_idx is not None:
+        data_rows = enumerate(total_rows[header_idx + 1:], start=header_idx + 2)
+        for i, values in data_rows:
+            if not values or not any(v is not None and str(v).strip() for v in values):
+                continue
+            r = {k: "" for k in COLUMNS}
+            for j, key in col_map.items():
+                if j < len(values):
+                    r[key] = _cell_str(values[j], key)
+            if r["recordId"] or (r["studentId"] and r["skillId"]):  # ignore footer/note rows
+                total += 1
+            r["_sheetRow"] = i
+            rows.append(r)
+    else:  # positional fallback: header row 4, data from row 5, columns A-T
+        for i, values in enumerate(total_rows[4:], start=5):
+            if not values or not any(v is not None and str(v).strip() for v in values):
+                continue
+            total += 1
+            r = {k: _cell_str(v, k) for k, v in zip(COLUMNS, values)}
+            r["_sheetRow"] = i
+            rows.append(r)
+
+    for r in rows:
+        if str(r.get("badgeCode", "")).startswith("=") or not r.get("badgeCode"):
+            # the workbook computes this by formula; a blank cell means the same
+            r["badgeCode"] = BADGE_BY_CATEGORY.get(r.get("skillCategory", ""), r.get("badgeCode", ""))
+        for k in COLUMNS:
+            if isinstance(r.get(k), str) and r[k].startswith("="):
+                r[k] = ""
+    return _clean(rows), total
+
+
 def _clean(rows: list[dict]) -> list[dict]:
     for r in rows:
         for k in COLUMNS:
@@ -88,15 +188,8 @@ class XlsxSheet:
         return openpyxl.load_workbook(self.path)
 
     def fetch(self) -> list[dict]:
-        ws = self._book().active
-        rows = []
-        for i, values in enumerate(ws.iter_rows(min_row=5, values_only=True), start=5):
-            if not values or not any(values):
-                continue
-            r = {k: ("" if v is None else str(v)) for k, v in zip(COLUMNS, values)}
-            r["_sheetRow"] = i
-            rows.append(r)
-        return _clean(rows)
+        rows, _ = parse_xlsx_bytes(self.path.read_bytes())
+        return rows
 
     def mirror_request(self, request: dict) -> None:
         return None

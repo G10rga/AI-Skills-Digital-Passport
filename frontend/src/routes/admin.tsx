@@ -2,12 +2,12 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { RefreshCw, RotateCcw, Sheet } from "lucide-react";
+import { FileUp, RefreshCw, RotateCcw, Sheet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { attestSkillRequest, decideNeedsReview, decidePassportRequest, decideSkillRequest, listNeedsReview, listPassportRequests, listPassports, listRecords, listSkillRequests, resetDemoData, revokeSkill, syncFromSheet } from "@/lib/api";
+import { attestSkillRequest, decideNeedsReview, decidePassportRequest, decideSkillRequest, listNeedsReview, listPassportRequests, listPassports, listRecords, listSkillRequests, resetDemoData, revokeSkill, syncFromSheet, uploadExcel } from "@/lib/api";
 import type { PassportRequest, SkillRequest, SyncResult } from "@/lib/types";
 
 export const Route = createFileRoute("/admin")({
@@ -87,6 +87,16 @@ function AdminPage() {
     },
   });
 
+  const upload = useMutation({
+    mutationFn: (f: File) => uploadExcel(f, true),
+    onSuccess: (r) => {
+      if (r.sync) setLast(r.sync);
+      qc.invalidateQueries();
+      toast.success(`Excel imported: ${r.imported} new · ${r.updated} updated · ${r.skipped} skipped${r.sync ? ` · ${r.sync.synced} skills synced` : ""}`);
+    },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
+  });
+
   const rows = useMemo(() => {
     const s = q.toLowerCase();
     return (records.data ?? []).filter((r) => !s || `${r.firstName} ${r.lastName} ${r.passportId} ${r.skillName} ${r.studentId}`.toLowerCase().includes(s));
@@ -102,6 +112,10 @@ function AdminPage() {
           <p className="text-muted-foreground">Skill records from the BTU Google Sheet. Syncing adds new skills to existing passports and anchors a new version.</p>
         </div>
         <div className="flex gap-2">
+          <label className={`inline-flex cursor-pointer items-center gap-2 rounded-md border border-input px-3 py-2 text-sm font-medium ${upload.isPending ? "pointer-events-none opacity-50" : "hover:bg-secondary"}`}>
+            <FileUp className="h-4 w-4" /> {upload.isPending ? "Uploading…" : "Upload Excel"}
+            <input type="file" accept=".xlsx" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload.mutate(f); e.target.value = ""; }} />
+          </label>
           <Button variant="ghost" onClick={async () => { await resetDemoData(); setLast(null); qc.invalidateQueries(); toast("Demo data reset"); }}><RotateCcw /> Reset demo</Button>
           <Button onClick={() => sync.mutate()} disabled={sync.isPending} className="bg-brand text-brand-foreground hover:bg-brand/90">
             <RefreshCw className={sync.isPending ? "animate-spin" : ""} /> {sync.isPending ? "Syncing…" : `Sync from Google Sheets (${pending})`}
@@ -142,6 +156,7 @@ function AdminPage() {
           <TabsTrigger value="review">Needs review {(flags.data ?? []).length > 0 && `(${(flags.data ?? []).length})`}</TabsTrigger>
         </TabsList>
         <TabsContent value="records" className="mt-4">
+          <p className="mb-3 text-xs text-muted-foreground">Upload Excel accepts the BTU workbook layout (.xlsx, headers on row 4, columns A–T — or camelCase headers). New rows are ingested and synced immediately; rows already present are updated, never duplicated.</p>
           <Input placeholder="Search name, Passport ID, skill…" value={q} onChange={(e) => setQ(e.target.value)} className="mb-3 max-w-sm" />
           <div className="rounded-xl border border-border bg-card">
             <Table>

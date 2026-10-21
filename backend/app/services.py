@@ -141,16 +141,41 @@ def passport_info(row: dict) -> PassportInfo:
 
 
 # ------------------------------------------------------------------- sync
+def ingest_rows(store, rows: list[dict]) -> dict:
+    """Ingest parsed rows: register new passports, upsert records (A-P
+    refreshed, Q-T system-managed). Returns new/existing record counts."""
+    existing = {r["recordId"] for r in store.list_records()}
+    imported = updated = 0
+    for r in rows:
+        if r.get("passportId") and r.get("studentId"):
+            store.register_passport(r)
+        store.upsert_record(r, r.get("_sheetRow"))
+        if r["recordId"] in existing:
+            updated += 1
+        else:
+            imported += 1
+    return {"imported": imported, "updated": updated}
+
+
 def ingest_sheet(store, sheet: SheetSource) -> list[dict]:
     """Pull rows from the sheet: register new passports, refresh A-P.
     Students appearing in the sheet get their (single) passport identity;
     sync itself never creates passports — see contract rule."""
     rows = sheet.fetch()
-    for r in rows:
-        if r.get("passportId") and r.get("studentId"):
-            store.register_passport(r)
-        store.upsert_record(r, r.get("_sheetRow"))
+    ingest_rows(store, rows)
     return rows
+
+
+def import_excel(store, ctx, data: bytes, do_sync: bool = True) -> dict:
+    """Admin Excel upload: parse the workbook, ingest its rows, then
+    (by default) run the normal sync so new NOT SYNCED rows are issued
+    as new passport versions through the exact same pipeline."""
+    from .sheets import parse_xlsx_bytes
+    rows, total = parse_xlsx_bytes(data)
+    counts = ingest_rows(store, rows)
+    sync_result = sync(store, ctx) if do_sync else None
+    return {"rows": len(rows), "skipped": total - len(rows), **counts,
+            "sync": sync_result.model_dump(by_alias=True) if sync_result else None}
 
 
 def sync(store, ctx, sheet: Optional[SheetSource] = None) -> SyncResult:
