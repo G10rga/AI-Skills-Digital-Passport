@@ -1,13 +1,16 @@
 [Unit]
-Description=BTU AI Skills Passport — Python backend (FastAPI)
-After=network.target
+Description=AI Passport backend (FastAPI/uvicorn)
+After=network-online.target
 
 [Service]
-# Adjust user + paths to where the repo is cloned on the server.
-User=ubuntu
-WorkingDirectory=/home/ubuntu/ai-skills-digital-passport
-EnvironmentFile=/home/ubuntu/ai-skills-digital-passport/deploy/.env.production
-ExecStart=/home/ubuntu/ai-skills-digital-passport/.venv/bin/python backend/run.py
+Type=simple
+User=aipassport
+Group=aipassport
+WorkingDirectory=/opt/aipassport
+EnvironmentFile=/opt/aipassport/.env
+# Cloudflared already occupies 8000/8001 on this host — bind loopback only.
+# HOST/PORT come from /opt/aipassport/.env (127.0.0.1:8013).
+ExecStart=/opt/aipassport/.venv/bin/python backend/run.py
 Restart=always
 RestartSec=3
 

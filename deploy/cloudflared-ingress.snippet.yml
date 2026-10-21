@@ -1,0 +1,23 @@
+# Merge these hostnames into /etc/cloudflared/config.yml (do not replace
+# existing hostnames — keep teoria/litera/etc. and the final 404 rule).
+# Same pattern as teoria: cloudflared occupies 8000/8001, Teoria is on 8012,
+# so AI Passport uses 8013 (API) and 8014 (frontend).
+#
+#   sudo systemctl restart cloudflared
+#
+# Point DNS (once per tunnel):
+#   sudo cloudflared tunnel route dns <TUNNEL_NAME> aipassport.g1orga.dev
+
+tunnel: YOUR_TUNNEL_ID
+credentials-file: /etc/cloudflared/YOUR_TUNNEL_ID.json
+
+ingress:
+  # API paths on the same subdomain -> Python backend (8013).
+  # Everything else on the hostname falls through to the frontend (8014).
+  - hostname: aipassport.g1orga.dev
+    path: ^/(passports|records|sync|verify/.+|me/passport|auth/.+|anchors/.+|admin/reset|issuer|health|docs|openapi\.json)(/.*)?$
+    service: http://127.0.0.1:8013
+  - hostname: aipassport.g1orga.dev
+    service: http://127.0.0.1:8014
+  # keep your other hostnames here
+  - service: http_status:404

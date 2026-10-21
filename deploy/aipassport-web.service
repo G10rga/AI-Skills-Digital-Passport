@@ -1,13 +1,15 @@
 [Unit]
-Description=BTU AI Skills Passport — frontend (Nitro node server, prebuilt .output)
-After=network.target
+Description=AI Passport frontend (Nitro node server)
+After=network-online.target aipassport-api.service
+Wants=aipassport-api.service
 
 [Service]
-# Adjust user + paths to where the repo is cloned on the server.
-User=ubuntu
-WorkingDirectory=/home/ubuntu/ai-skills-digital-passport/frontend
+Type=simple
+User=aipassport
+Group=aipassport
+WorkingDirectory=/opt/aipassport/frontend
 Environment=HOST=127.0.0.1
-Environment=PORT=3001
+Environment=PORT=8014
 ExecStart=/usr/bin/node .output/server/index.mjs
 Restart=always
 RestartSec=3
