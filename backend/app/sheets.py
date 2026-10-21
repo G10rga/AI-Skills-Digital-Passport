@@ -20,9 +20,14 @@ COLUMNS = ["studentId", "firstName", "lastName", "email", "program", "educationL
            "syncStatus", "syncedVersion", "syncedAt", "syncNotes"]
 
 
+REQUEST_COLUMNS = ["requestId", "studentId", "skillId", "reasoning", "proofLinks",
+                   "aiSummary", "aiScore", "status", "reviewer", "comment", "decisionDate"]
+
+
 class SheetSource(Protocol):
     def fetch(self) -> list[dict]: ...
     def write_back(self, updates: list[dict]) -> None: ...
+    def mirror_request(self, request: dict) -> None: ...
 
 
 NULLABLE = ("syncStatus", "syncedVersion", "syncedAt", "syncNotes")
@@ -45,6 +50,9 @@ class LocalJsonSheet:
 
     def fetch(self) -> list[dict]:
         return _clean(load_seed(self.path))
+
+    def mirror_request(self, request: dict) -> None:
+        return None  # DB is canonical offline; Google source mirrors to its tab
 
     def append_record(self, record: dict) -> None:
         if not self.writeback_enabled:
@@ -89,6 +97,9 @@ class XlsxSheet:
             r["_sheetRow"] = i
             rows.append(r)
         return _clean(rows)
+
+    def mirror_request(self, request: dict) -> None:
+        return None
 
     def append_record(self, record: dict) -> None:
         if not self.writeback_enabled:
@@ -163,6 +174,22 @@ class GoogleSheetsSheet:
             spreadsheetId=self.spreadsheet_id, range=self.sheet_range,
             valueInputOption="RAW",
             body={"values": [[record.get(k) or "" for k in COLUMNS]]}).execute()
+
+    def mirror_request(self, request: dict) -> None:
+        """Read-model mirror into the 'Skill Requests' tab (DB stays canonical)."""
+        import json as _json
+        links = request.get("proof_links") or "[]"
+        try:
+            links = ", ".join(_json.loads(links)) if isinstance(links, str) else ", ".join(links)
+        except Exception:
+            links = str(links)
+        row = [request.get("id", ""), request.get("student_id", ""), request.get("skill_id", ""),
+               request.get("description", ""), links, request.get("ai_summary", ""),
+               request.get("ai_score", ""), request.get("status", ""), request.get("reviewer", ""),
+               request.get("admin_note", ""), request.get("decided_at", "")]
+        self._api().values().append(
+            spreadsheetId=self.spreadsheet_id, range="Skill Requests!A4:K",
+            valueInputOption="RAW", body={"values": [row]}).execute()
 
     def write_back(self, updates: list[dict]) -> None:
         data = []

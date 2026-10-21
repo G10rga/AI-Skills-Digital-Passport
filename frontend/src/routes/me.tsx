@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { currentStudentEmail, getMyPassport, getMyPassportRequest, getSkillCatalogue, getSkillTest, listMySkillRequests, listNotifications, logoutStudent, requestPassport, requestVerificationCode, submitProofRequest, submitTestRequest, verifyAccountCode } from "@/lib/api";
+import { completeRequestTest, currentStudentEmail, getMyPassport, getMyPassportRequest, getSkillCatalogue, getSkillTest, listMySkillRequests, listNotifications, logoutStudent, requestPassport, requestVerificationCode, submitProofRequest, submitSkillGap, submitTestRequest, verifyAccountCode } from "@/lib/api";
 import type { SkillRequest } from "@/lib/types";
 import { toast } from "sonner";
 import { PassportView } from "@/components/passport/PassportView";
@@ -40,7 +40,7 @@ function MePage() {
         </div>
         <Button variant="outline" onClick={() => { logoutStudent(); setEmail(null); qc.clear(); }}><LogOut /> Sign out</Button>
       </div>
-      {isLoading ? <p className="text-muted-foreground">Loading…</p> : data?.versions.length ? <><PassportView passport={data} /><SkillRequestSection owned={new Set(data.versions.at(-1)?.skills.map((x) => x.skillId) ?? [])} /></> : <PassportRequestSection hasShell={!!data} />}
+      {isLoading ? <p className="text-muted-foreground">Loading…</p> : data?.versions.length ? <><PassportView passport={data} /><SkillRequestSection owned={new Set(data.versions.at(-1)?.skills.map((x) => x.skillId) ?? [])} /><SkillGapSection /></> : <PassportRequestSection hasShell={!!data} />}
     </div>
   );
 }
@@ -130,9 +130,68 @@ function PassportRequestSection({ hasShell }: { hasShell: boolean }) {
 
 const reqStatus: Record<string, string> = {
   PENDING: "bg-brand text-brand-foreground",
+  PENDING_ADMIN: "bg-brand text-brand-foreground",
+  AI_REVIEWED: "bg-stamp-cyan text-ink",
+  NEEDS_TEST: "bg-stamp-pink text-background",
   APPROVED: "bg-success text-background",
   REJECTED: "bg-destructive text-destructive-foreground",
 };
+
+function SkillGapSection() {
+  const [jd, setJd] = useState("");
+  const gap = useMutation({ mutationFn: () => submitSkillGap(jd) });
+  return (
+    <section className="no-print mt-8 rounded-xl border border-border bg-card p-6">
+      <h2 className="text-2xl">Skill-gap check</h2>
+      <p className="mt-1 text-sm text-muted-foreground">Paste a job description — we diff its required skills against your verified passport skills and point each gap at the BTU activity that teaches it. Read-only; nothing is written to your passport.</p>
+      <textarea value={jd} onChange={(e) => setJd(e.target.value)} rows={5} className="mt-4 w-full rounded-md border border-input bg-background p-3 text-sm" placeholder="Paste the job description here…" />
+      <Button className="mt-3" disabled={!jd.trim() || gap.isPending} onClick={() => gap.mutate()}>{gap.isPending ? "Analysing…" : "Check my gaps"}</Button>
+      {gap.isError && <p className="mt-3 text-sm text-destructive">Skill-gap needs the Python backend.</p>}
+      {gap.data && (
+        <div className="mt-5 grid gap-4 sm:grid-cols-2 text-sm">
+          <div>
+            <h3 className="font-display">Matched ({gap.data.matched.length})</h3>
+            {gap.data.matched.map((s) => <p key={s.skillId} className="mt-1 text-success">✓ {s.skillName}</p>)}
+          </div>
+          <div>
+            <h3 className="font-display">Missing ({gap.data.missing.length})</h3>
+            {gap.data.suggestions.map(({ skill, learnVia }) => (
+              <p key={skill.skillId} className="mt-1">• <b>{skill.skillName}</b> <span className="text-muted-foreground">— learn via: {learnVia || skill.skillCategory}</span></p>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function NeedsTest({ request, onDone }: { request: SkillRequest; onDone: () => void }) {
+  const test = useQuery({ queryKey: ["test", request.skillId], queryFn: () => getSkillTest(request.skillId) });
+  const [answers, setAnswers] = useState<Record<string, number>>({});
+  const [msg, setMsg] = useState("");
+  const submit = useMutation({
+    mutationFn: () => completeRequestTest(request.id, answers),
+    onSuccess: () => { setMsg("Test passed — your request is now with an administrator."); onDone(); },
+    onError: (e: Error) => setMsg(e.message.replace(/^\d+ /, "")),
+  });
+  return (
+    <div className="mt-3 rounded-md bg-secondary p-3">
+      <p className="text-xs font-semibold">This top-tier skill needs a passing test before admin review.</p>
+      {(test.data?.questions ?? []).map((q, i) => (
+        <fieldset key={q.id} className="mt-2">
+          <legend className="text-xs font-semibold">{i + 1}. {q.question}</legend>
+          {q.options.map((o, oi) => (
+            <label key={oi} className="mt-1 flex cursor-pointer items-center gap-2 text-xs">
+              <input type="radio" name={`${request.id}-${q.id}`} checked={answers[q.id] === oi} onChange={() => setAnswers({ ...answers, [q.id]: oi })} /> {o}
+            </label>
+          ))}
+        </fieldset>
+      ))}
+      <Button size="sm" className="mt-3" disabled={!test.data || Object.keys(answers).length < (test.data?.questions.length ?? 5) || submit.isPending} onClick={() => submit.mutate()}>Submit test</Button>
+      {msg && <p className="mt-2 text-xs font-semibold">{msg}</p>}
+    </div>
+  );
+}
 
 function SkillRequestSection({ owned }: { owned: Set<string> }) {
   const qc = useQueryClient();
@@ -231,12 +290,18 @@ function SkillRequestSection({ owned }: { owned: Set<string> }) {
           <h3 className="font-display">My requests</h3>
           <div className="mt-3 space-y-2">
             {(mine.data ?? []).map((r: SkillRequest) => (
-              <div key={r.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3 text-sm">
-                <span className="font-semibold">{r.skillName}</span>
-                <span className="text-muted-foreground">{r.method === "TEST" ? `Test ${r.testScore}%` : "Proof upload"}</span>
-                <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${reqStatus[r.status]}`}>{r.status}</span>
-                {r.status === "APPROVED" && <span className="text-xs text-muted-foreground">{r.recordId} · {r.recordSyncStatus === "SYNCED" ? "on passport" : "waiting for next sync"}</span>}
-                {r.adminNote && <span className="text-xs text-muted-foreground">“{r.adminNote}”</span>}
+              <div key={r.id} className="rounded-lg border border-border p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="font-semibold">{r.skillName}</span>
+                  <span className="text-muted-foreground">{r.method === "TEST" ? `Test ${r.testScore}%` : "Proof upload"}</span>
+                  <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${reqStatus[r.status]}`}>{r.status}</span>
+                  {r.status === "APPROVED" && <span className="text-xs text-muted-foreground">{r.recordId} · {r.recordSyncStatus === "SYNCED" ? "on passport" : "waiting for next sync"}</span>}
+                  {r.adminNote && <span className="text-xs text-muted-foreground">“{r.adminNote}”</span>}
+                  {r.reviewer && <span className="text-xs text-muted-foreground">Reviewer: {r.reviewer}</span>}
+                </div>
+                {r.aiSummary && <p className="mt-1 text-xs text-muted-foreground">AI review ({r.aiScore}% · {r.aiModel}): {r.aiSummary}</p>}
+                {(r.proofLinks ?? []).length > 0 && <p className="mt-1 break-all text-xs text-muted-foreground">Proof: {r.proofLinks!.join(", ")}</p>}
+                {r.status === "NEEDS_TEST" && <NeedsTest request={r} onDone={invalidate} />}
               </div>
             ))}
           </div>

@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as MeRouteImport } from './routes/me'
 import { Route as VerifyRouteImport } from './routes/verify'
+import { Route as PSlugRouteImport } from './routes/p.$slug'
 import { Route as PassportPassportIdRouteImport } from './routes/passport.$passportId'
 
 const IndexRoute = IndexRouteImport.update({
@@ -35,6 +36,11 @@ const VerifyRoute = VerifyRouteImport.update({
   path: '/verify',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PSlugRoute = PSlugRouteImport.update({
+  id: '/p/$slug',
+  path: '/p/$slug',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PassportPassportIdRoute = PassportPassportIdRouteImport.update({
   id: '/passport/$passportId',
   path: '/passport/$passportId',
@@ -46,6 +52,7 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/me': typeof MeRoute
   '/verify': typeof VerifyRoute
+  '/p/$slug': typeof PSlugRoute
   '/passport/$passportId': typeof PassportPassportIdRoute
 }
 export interface FileRoutesByTo {
@@ -53,6 +60,7 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/me': typeof MeRoute
   '/verify': typeof VerifyRoute
+  '/p/$slug': typeof PSlugRoute
   '/passport/$passportId': typeof PassportPassportIdRoute
 }
 export interface FileRoutesById {
@@ -61,14 +69,23 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/me': typeof MeRoute
   '/verify': typeof VerifyRoute
+  '/p/$slug': typeof PSlugRoute
   '/passport/$passportId': typeof PassportPassportIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/admin' | '/me' | '/verify' | '/passport/$passportId'
+  fullPaths:
+    '/' | '/admin' | '/me' | '/verify' | '/p/$slug' | '/passport/$passportId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/admin' | '/me' | '/verify' | '/passport/$passportId'
-  id: '__root__' | '/' | '/admin' | '/me' | '/verify' | '/passport/$passportId'
+  to: '/' | '/admin' | '/me' | '/verify' | '/p/$slug' | '/passport/$passportId'
+  id:
+    | '__root__'
+    | '/'
+    | '/admin'
+    | '/me'
+    | '/verify'
+    | '/p/$slug'
+    | '/passport/$passportId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -76,6 +93,7 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   MeRoute: typeof MeRoute
   VerifyRoute: typeof VerifyRoute
+  PSlugRoute: typeof PSlugRoute
   PassportPassportIdRoute: typeof PassportPassportIdRoute
 }
 
@@ -109,6 +127,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VerifyRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/p/$slug': {
+      id: '/p/$slug'
+      path: '/p/$slug'
+      fullPath: '/p/$slug'
+      preLoaderRoute: typeof PSlugRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/passport/$passportId': {
       id: '/passport/$passportId'
       path: '/passport/$passportId'
@@ -124,6 +149,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   MeRoute: MeRoute,
   VerifyRoute: VerifyRoute,
+  PSlugRoute: PSlugRoute,
   PassportPassportIdRoute: PassportPassportIdRoute,
 }
 export const routeTree = rootRouteImport

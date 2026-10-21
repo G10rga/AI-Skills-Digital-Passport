@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { CheckCircle2, XCircle, AlertTriangle, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { verifyByCode, verifyDocumentContent } from "@/lib/api";
+import { explainSkill, verifyBulk, verifyByCode, verifyDocumentContent } from "@/lib/api";
 import type { VerifyResult } from "@/lib/types";
 
 export const Route = createFileRoute("/verify")({
@@ -55,6 +55,7 @@ function VerifyPage() {
         <Button disabled={busy || !value.trim()}>{busy ? "Checking…" : "Verify"}</Button>
       </form>
 
+      <BulkVerify />
       {result && !busy && (result.found ? <Found r={result} /> : (
         <div className="mt-8 flex gap-3 rounded-xl border border-destructive bg-card p-5">
           <XCircle className="h-7 w-7 text-destructive" />
@@ -65,6 +66,48 @@ function VerifyPage() {
         </div>
       ))}
     </div>
+  );
+}
+
+function BulkVerify() {
+  const [text, setText] = useState("");
+  const [rows, setRows] = useState<VerifyResult[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  return (
+    <details className="mt-8 rounded-lg border border-border p-4 text-sm">
+      <summary className="cursor-pointer font-semibold">Employers: verify many passports at once</summary>
+      <p className="mt-2 text-muted-foreground">Paste one verification code per line (max 100). No account needed; rate-limited per IP.</p>
+      <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} className="mt-3 w-full rounded-md border border-input bg-background p-2 font-mono text-xs" placeholder={"000125-V1-3F9A1C2B\n000126-V2-…"} />
+      <Button disabled={busy || !text.trim()} onClick={async () => { setBusy(true); try { setRows(await verifyBulk(text.split(/\s+/).filter(Boolean))); } catch { setRows([]); } setBusy(false); }}>
+        {busy ? "Checking…" : "Verify all"}
+      </Button>
+      {rows && (
+        <ul className="mt-3 space-y-1">
+          {rows.map((r, i) => (
+            <li key={i} className="flex justify-between gap-2">
+              <span className="font-mono text-xs">{r.version?.verificationCode ?? "—"}</span>
+              <span className={r.found && r.documentAuthentic && r.issuerAuthentic ? "font-semibold text-success" : "font-semibold text-destructive"}>
+                {r.found ? (r.isLatest ? "Authentic · latest" : `Authentic · superseded by V${r.latestVersion}`) : "Not found"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </details>
+  );
+}
+
+function ExplainSkill({ skillId, skillName }: { skillId: string; skillName: string }) {
+  const [q, setQ] = useState("");
+  const [answer, setAnswer] = useState("");
+  return (
+    <span className="ml-2">
+      <button type="button" className="text-xs underline" onClick={async () => {
+        try { const r = await explainSkill(skillId, q); setAnswer(r.answer); } catch { setAnswer("Explanation needs the Python backend."); }
+      }}>Explain this skill</button>
+      {answer && <span className="mt-1 block max-w-md rounded bg-secondary p-2 text-xs font-normal">{answer}</span>}
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={`Ask about ${skillName}…`} className="ml-2 w-44 rounded border border-input bg-background px-1 py-0.5 text-xs" />
+    </span>
   );
 }
 
@@ -80,7 +123,7 @@ function Found({ r }: { r: VerifyResult }) {
       {!r.isLatest && (
         <div className="flex gap-3 rounded-lg border border-brand bg-card p-4">
           <AlertTriangle className="h-6 w-6 shrink-0 text-brand" />
-          <div className="text-sm">This is a genuine but <b>older version</b>. The latest valid version is <b>V{r.latestVersion}</b>.</div>
+          <div className="text-sm">This is a genuine but <b>older version</b>. The latest valid version is <b>V{r.latestVersion}</b>.{r.supersededReason && <> <b>{r.supersededReason}</b>.</>}</div>
         </div>
       )}
       <Check ok={r.documentAuthentic} label="Document authenticity" detail="The passport content matches the fingerprint recorded on the blockchain — nothing was changed." />
@@ -90,12 +133,14 @@ function Found({ r }: { r: VerifyResult }) {
       <div className="rounded-lg border border-border bg-card p-4 text-sm">
         <div className="mb-2 font-display">Skills on this version ({v.skills.length})</div>
         <ul className="grid gap-1 sm:grid-cols-2">
-          {v.skills.map((s) => <li key={s.recordId}>• {s.skillName} <span className="text-muted-foreground">({s.skillCategory})</span></li>)}
+          {v.skills.map((s) => <li key={s.recordId}>• {s.skillName} <span className="text-muted-foreground">({s.skillCategory})</span><ExplainSkill skillId={s.skillId} skillName={s.skillName} /></li>)}
         </ul>
         <div className="mt-4 space-y-1 break-all font-mono text-[11px] text-muted-foreground">
           <div>Document hash: {v.documentHash}</div>
           <div>Transaction: {v.txHash}</div>
           <div>Network: {v.network} · block #{v.blockNumber}</div>
+          {v.ipfsCid && <div>IPFS: <a className="underline" href={`https://ipfs.io/ipfs/${v.ipfsCid}`} target="_blank" rel="noreferrer">ipfs://{v.ipfsCid}</a></div>}
+          {v.signerRoles && v.signerRoles.length > 0 && <div>Signed by roles: {v.signerRoles.join(", ")}</div>}
           <div>Issued: {new Date(v.issuedAt).toLocaleString()}</div>
         </div>
         <Link to="/passport/$passportId" params={{ passportId: p.passportId }} className="mt-3 inline-block font-semibold underline">View passport</Link>

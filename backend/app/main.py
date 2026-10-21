@@ -9,16 +9,18 @@ from __future__ import annotations
 import re
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import services
 from .anchor import make_anchor
 from .config import settings
 from .issuer import IssuerSigner
-from .models import (DecisionRequest, IssuerPublic, LoginResponse, NotificationOut, Passport,
+from .models import (AttestRequest, BulkVerifyRequest, CompleteTestRequest, DecisionRequest,
+                     ExplainRequest, IssuerPublic, LoginResponse, NotificationOut, Passport,
                      PassportRequestCreate, PassportRequestOut, PassportSummary, RequestCodeRequest,
-                     RequestCodeResponse, SkillCatalogItem, SkillRecord, SkillRequestOut, SkillTest,
+                     RequestCodeResponse, ReviewFlagOut, RevokeRequest, SkillCatalogItem, SkillGapRequest,
+                     SkillRecord, SkillRequestOut, SkillTest,
                      SyncResult, TestQuestion, TestRequestSubmit, VerifyCodeRequest,
                      VerifyDocumentRequest, VerifyDocumentResult, VerifyResult)
 from .security import Auth, make_token
@@ -66,6 +68,22 @@ def root():
 def issuer():
     i = services.issuer_model(ctx)
     return IssuerPublic(**i.model_dump(), publicKey=ctx.signer.public_key_b64())
+
+
+@app.get("/issuer/registry")
+def issuer_registry():
+    from .registry import issuer_registry as _registry
+    return _registry(ctx)
+
+
+@app.get("/.well-known/did.json")
+def did_document():
+    return services.did_document(ctx)
+
+
+@app.get("/issuer/did")
+def did_document_alias():
+    return services.did_document(ctx)
 
 
 # ------------------------------------------------------------- passports
@@ -288,12 +306,34 @@ def admin_skill_requests():
     return [services.request_out(store, r) for r in store.list_requests()]
 
 
+@app.post("/skill-requests/{request_id}/test", response_model=SkillRequestOut)
+def complete_request_test(request_id: int, body: CompleteTestRequest,
+                          email: str = Depends(auth.student_email)):
+    try:
+        req = services.complete_request_test(store, request_id, email, body.answers)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
+
+
+@app.post("/admin/skill-requests/{request_id}/attest", response_model=SkillRequestOut,
+          dependencies=[Depends(auth.require_admin)])
+def attest_skill_request(request_id: int, body: AttestRequest):
+    try:
+        req = services.attest_request(store, request_id, body.role, body.approver)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return services.request_out(store, req)
+
+
 @app.post("/admin/skill-requests/{request_id}/approve", response_model=SkillRequestOut,
           dependencies=[Depends(auth.require_admin)])
-def approve_skill_request(request_id: int, body: DecisionRequest):
+def approve_skill_request(request_id: int, body: DecisionRequest,
+                          x_reviewer: str | None = Header(default=None, alias="X-Reviewer")):
     try:
         sheet = make_sheet_source(settings) if settings.sheet_source != "seed" else None
-        req = services.approve_request(store, request_id, body.note, sheet)
+        req = services.approve_request(store, request_id, body.note, sheet,
+                                       reviewer=x_reviewer or "Admin", ctx=ctx)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return services.request_out(store, req)
@@ -301,9 +341,11 @@ def approve_skill_request(request_id: int, body: DecisionRequest):
 
 @app.post("/admin/skill-requests/{request_id}/reject", response_model=SkillRequestOut,
           dependencies=[Depends(auth.require_admin)])
-def reject_skill_request(request_id: int, body: DecisionRequest):
+def reject_skill_request(request_id: int, body: DecisionRequest,
+                         x_reviewer: str | None = Header(default=None, alias="X-Reviewer")):
     try:
-        req = services.reject_request(store, request_id, body.note)
+        req = services.reject_request(store, request_id, body.note,
+                                      reviewer=x_reviewer or "Admin", ctx=ctx)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return services.request_out(store, req)
@@ -346,6 +388,146 @@ def anchor_proof(document_hash: str):
     return {"documentHash": v["document_hash"], "txHash": v["tx_hash"],
             "network": v["network"], "blockNumber": v["block_number"],
             "passportId": v["passport_id"], "version": v["version"],
+            "status": v.get("status") or "ACTIVE",
+            "supersededReason": v.get("superseded_reason") or "",
+            "revokedRecordIds": services._json_list(v.get("revoked_record_ids")),
+            "signerRoles": services._json_list(v.get("signer_roles")),
+            "ipfsCid": v.get("ipfs_cid") or "",
             "issuer": services.issuer_model(ctx).model_dump(by_alias=True),
             "issuerSignature": v["issuer_signature"],
             "issuerPublicKey": ctx.signer.public_key_b64(), "algorithm": "Ed25519"}
+
+
+# ------------------------------------------------------- revocation
+@app.post("/admin/passports/{passport_id}/skills/{record_id}/revoke",
+          dependencies=[Depends(auth.require_admin)])
+def revoke_skill(passport_id: str, record_id: str, body: RevokeRequest):
+    try:
+        sheet = make_sheet_source(settings) if settings.sheet_source != "seed" else None
+        v = services.revoke_skill(store, passport_id, record_id, body.reason, ctx, sheet)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return v.model_dump(by_alias=True)
+
+
+# ------------------------------------------- credentials / badges / IPFS
+def _passport_and_version(passport_id: str, version: int):
+    row = store.get_passport(passport_id)
+    if not row:
+        raise HTTPException(404, f"Passport {passport_id} not found")
+    v = store.get_version(passport_id, version)
+    if not v:
+        raise HTTPException(404, f"Version {version} not found")
+    return row, v
+
+
+@app.get("/passports/{passport_id}/versions/{version}/credential")
+def credential(passport_id: str, version: int):
+    row, v = _passport_and_version(passport_id, version)
+    return services.build_credential(store, row, v, ctx)
+
+
+@app.get("/passports/{passport_id}/versions/{version}/badges")
+def badges(passport_id: str, version: int):
+    row, v = _passport_and_version(passport_id, version)
+    return services.build_badges(store, row, v, ctx, settings.public_base_url)
+
+
+@app.post("/passports/{passport_id}/versions/{version}/publish",
+          dependencies=[Depends(auth.require_admin)])
+async def publish_ipfs(passport_id: str, version: int, file: UploadFile = File(...)):
+    row, v = _passport_and_version(passport_id, version)
+    raw = await file.read()
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    (settings.upload_dir / f"{passport_id}-V{version}.pdf").write_bytes(raw)
+    from .ipfs import make_ipfs
+    rec = make_ipfs(settings.ipfs_mode).upload(raw, file.filename or "")
+    store.update_version_ipfs(passport_id, version, rec.cid)
+    return {"cid": rec.cid, "sha256": rec.sha256, "gatewayUrl": rec.gateway_url,
+            "passportId": passport_id, "version": version}
+
+
+# ------------------------------------------------- employer / public
+_bulk_hits: dict[str, list[float]] = {}
+
+
+@app.post("/verify/bulk", response_model=list[VerifyResult])
+def verify_bulk(body: BulkVerifyRequest, request: Request):
+    import time as _time
+    ip = request.client.host if request.client else "unknown"
+    now = _time.time()
+    hits = [t for t in _bulk_hits.get(ip, []) if now - t < 60]
+    if len(hits) >= settings.bulk_rate_limit_per_minute:
+        raise HTTPException(429, "Rate limit exceeded for bulk verification")
+    hits.append(now)
+    _bulk_hits[ip] = hits
+    if len(body.codes) > settings.bulk_verify_limit:
+        raise HTTPException(400, f"Too many codes (max {settings.bulk_verify_limit})")
+    return [services.verify_by_code(store, c, ctx) for c in body.codes]
+
+
+@app.post("/verify/explain")
+def explain_skill(body: ExplainRequest):
+    item = services.catalogue_item(store, body.skill_id)
+    if not item:
+        raise HTTPException(404, f"Unknown skill {body.skill_id}")
+    from .ai import make_explainer
+    return make_explainer(settings.ai_mode).explain(item, body.question)
+
+
+@app.get("/public/{slug}")
+def public_profile(slug: str):
+    row = store.get_passport_by_slug(slug)
+    if not row:
+        raise HTTPException(404, "Profile not found")
+    p = services.passport_model(store, row)
+    latest = p.versions[-1] if p.versions else None
+    return {"slug": slug, "passportId": p.passport_id, "firstName": p.first_name,
+            "lastName": p.last_name, "program": p.program,
+            "educationLevel": p.education_level, "firstIssued": p.first_issued,
+            "latestVersion": latest.version if latest else None,
+            "verificationCode": latest.verification_code if latest else None,
+            "skills": [s.model_dump(by_alias=True) for s in (latest.skills if latest else [])]}
+
+
+# ------------------------------------------------------------ student+
+@app.post("/me/skill-gap")
+def skill_gap(body: SkillGapRequest, email: str = Depends(auth.student_email)):
+    return services.skill_gap(store, _student_passport(email), body.job_description)
+
+
+@app.get("/me/passport/wallet")
+def wallet_pass(email: str = Depends(auth.student_email)):
+    row = _student_passport(email)
+    versions = store.get_versions(row["passport_id"])
+    if not versions:
+        raise HTTPException(404, "Passport not issued yet")
+    v = versions[-1]
+    from .wallet_pass import build_wallet_pass
+    url = f"{settings.public_base_url}/verify?code={v['verification_code']}"
+    return build_wallet_pass(row, v, url)
+
+
+# --------------------------------------------------------- needs review
+@app.get("/admin/needs-review", response_model=list[ReviewFlagOut],
+         dependencies=[Depends(auth.require_admin)])
+def needs_review():
+    return store.list_flags("FLAGGED")
+
+
+@app.post("/admin/needs-review/{flag_id}/release", response_model=ReviewFlagOut,
+          dependencies=[Depends(auth.require_admin)])
+def release_flag(flag_id: int):
+    out = store.decide_flag(flag_id, "RELEASED", services.now_iso())
+    if not out:
+        raise HTTPException(404, "Flag not found")
+    return out
+
+
+@app.post("/admin/needs-review/{flag_id}/reject", response_model=ReviewFlagOut,
+          dependencies=[Depends(auth.require_admin)])
+def reject_flag(flag_id: int):
+    out = store.decide_flag(flag_id, "REJECTED", services.now_iso())
+    if not out:
+        raise HTTPException(404, "Flag not found")
+    return out

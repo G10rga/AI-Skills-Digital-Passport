@@ -80,7 +80,11 @@ def test_duplicate_and_error_rows_never_touch_passport():
     recs = {x["recordId"]: x for x in client.get("/records").json()}
     assert recs["REC-9002"]["syncNotes"] == "Unknown Passport ID"
     # existing skills unchanged apart from the legitimate new-version sync
-    assert get()["versions"][0] == base["versions"][0]
+    # (status is derived: V1 becomes SUPERSEDED once V2 exists)
+    after_v1 = get()["versions"][0]
+    assert after_v1["skills"] == base["versions"][0]["skills"]
+    assert after_v1["documentHash"] == base["versions"][0]["documentHash"]
+    assert after_v1["status"] == "SUPERSEDED"
 
 
 def test_issuer_signature_verifiable_independently():

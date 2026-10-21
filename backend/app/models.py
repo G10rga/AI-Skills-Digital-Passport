@@ -56,6 +56,11 @@ class PassportVersion(BaseModel):
     tx_hash: str = Field(alias="txHash")
     network: str
     block_number: int = Field(alias="blockNumber")
+    status: str = "ACTIVE"  # ACTIVE | SUPERSEDED | REVOKED_CONTENT
+    superseded_reason: str = Field(default="", alias="supersededReason")
+    revoked_record_ids: list[str] = Field(default_factory=list, alias="revokedRecordIds")
+    ipfs_cid: str = Field(default="", alias="ipfsCid")
+    signer_roles: list[str] = Field(default_factory=list, alias="signerRoles")
 
 
 class Passport(BaseModel):
@@ -69,6 +74,7 @@ class Passport(BaseModel):
     education_level: str = Field(alias="educationLevel")
     student_status: str = Field(alias="studentStatus")
     first_issued: str = Field(alias="firstIssued")
+    public_slug: str = Field(default="", alias="publicSlug")
     versions: list[PassportVersion]
 
 
@@ -123,6 +129,8 @@ class VerifyResult(BaseModel):
     # extra (ignored by the current UI): lets any third party check BTU's
     # Ed25519 signature over documentHash against GET /issuer's publicKey.
     issuer_signature: Optional[str] = Field(default=None, alias="issuerSignature")
+    version_status: Optional[str] = Field(default=None, alias="versionStatus")
+    superseded_reason: Optional[str] = Field(default=None, alias="supersededReason")
 
 
 class SyncLogEntry(BaseModel):
@@ -138,6 +146,7 @@ class SyncResult(BaseModel):
     synced: int
     duplicates: int
     errors: int
+    flagged: int = 0
     passports_updated: list[dict] = Field(alias="passportsUpdated")
     log: list[SyncLogEntry]
 
@@ -200,7 +209,17 @@ class SkillRequestOut(BaseModel):
     evidence_hash: str = Field(default="", alias="evidenceHash")
     evidence_url: str = Field(default="", alias="evidenceUrl")
     description: str = ""
-    status: str  # PENDING | APPROVED | REJECTED
+    reasoning: str = ""
+    proof_links: list[str] = Field(default_factory=list, alias="proofLinks")
+    ai_summary: str = Field(default="", alias="aiSummary")
+    ai_score: Optional[int] = Field(default=None, alias="aiScore")
+    ai_model: str = Field(default="", alias="aiModel")
+    reviewer: str = ""
+    instructor_approval: bool = Field(default=False, alias="instructorApproval")
+    career_center_approval: bool = Field(default=False, alias="careerCenterApproval")
+    instructor_approver: str = Field(default="", alias="instructorApprover")
+    career_center_approver: str = Field(default="", alias="careerCenterApprover")
+    status: str  # SUBMITTED|AI_REVIEWED|NEEDS_TEST|PENDING_ADMIN|APPROVED|REJECTED (legacy PENDING)
     admin_note: str = Field(default="", alias="adminNote")
     record_id: str = Field(default="", alias="recordId")
     created_at: str = Field(alias="createdAt")
@@ -273,3 +292,42 @@ class VerifyDocumentResult(BaseModel):
     recomputed_hash: str = Field(alias="recomputedHash")
     matches: bool
     anchored_hash: Optional[str] = Field(alias="anchoredHash")
+
+
+class BulkVerifyRequest(BaseModel):
+    codes: list[str]
+
+
+class ExplainRequest(BaseModel):
+    model_config = Cfg
+    skill_id: str = Field(alias="skillId")
+    question: str = ""
+
+
+class SkillGapRequest(BaseModel):
+    model_config = Cfg
+    job_description: str = Field(alias="jobDescription")
+
+
+class AttestRequest(BaseModel):
+    role: str  # Instructor | CareerCenter
+    approver: str = ""
+
+
+class RevokeRequest(BaseModel):
+    reason: str = ""
+
+
+class CompleteTestRequest(BaseModel):
+    answers: dict[str, int]
+
+
+class ReviewFlagOut(BaseModel):
+    model_config = Cfg
+    id: int
+    record_id: str = Field(alias="recordId")
+    passport_id: str = Field(default="", alias="passportId")
+    reason: str
+    status: str
+    created_at: str = Field(alias="createdAt")
+    decided_at: str = Field(default="", alias="decidedAt")

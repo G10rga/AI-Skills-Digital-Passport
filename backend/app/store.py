@@ -21,12 +21,14 @@ CREATE TABLE IF NOT EXISTS passports(
   passport_id TEXT PRIMARY KEY, student_id TEXT NOT NULL UNIQUE,
   first_name TEXT NOT NULL, last_name TEXT NOT NULL, email TEXT DEFAULT '',
   program TEXT DEFAULT '', education_level TEXT DEFAULT '',
-  student_status TEXT DEFAULT '', first_issued TEXT DEFAULT '');
+  student_status TEXT DEFAULT '', first_issued TEXT DEFAULT '', public_slug TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS versions(
   id INTEGER PRIMARY KEY, passport_id TEXT NOT NULL REFERENCES passports(passport_id),
   version INT NOT NULL, issued_at TEXT NOT NULL, document_hash TEXT NOT NULL UNIQUE,
   verification_code TEXT NOT NULL UNIQUE, tx_hash TEXT NOT NULL, network TEXT NOT NULL,
   block_number INT NOT NULL, issuer_signature TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'ACTIVE', superseded_reason TEXT DEFAULT '',
+  revoked_record_ids TEXT DEFAULT '[]', ipfs_cid TEXT DEFAULT '', signer_roles TEXT DEFAULT '[]',
   UNIQUE(passport_id, version));
 CREATE TABLE IF NOT EXISTS version_skills(
   version_id INT NOT NULL REFERENCES versions(id), record_id TEXT NOT NULL,
@@ -48,7 +50,11 @@ CREATE TABLE IF NOT EXISTS skill_requests(
   test_score INT, evidence_name TEXT DEFAULT '', evidence_hash TEXT DEFAULT '',
   evidence_url TEXT DEFAULT '', description TEXT DEFAULT '',
   status TEXT NOT NULL DEFAULT 'PENDING', admin_note TEXT DEFAULT '',
-  record_id TEXT DEFAULT '', created_at TEXT NOT NULL, decided_at TEXT DEFAULT '');
+  record_id TEXT DEFAULT '', created_at TEXT NOT NULL, decided_at TEXT DEFAULT '',
+  ai_summary TEXT DEFAULT '', ai_score INT, ai_model TEXT DEFAULT '', reviewer TEXT DEFAULT '',
+  proof_links TEXT DEFAULT '[]', instructor_approval INT NOT NULL DEFAULT 0,
+  career_center_approval INT NOT NULL DEFAULT 0,
+  instructor_approver TEXT DEFAULT '', career_center_approver TEXT DEFAULT '');
 CREATE TABLE IF NOT EXISTS verification_codes(
   email TEXT PRIMARY KEY, code_hash TEXT NOT NULL, expires_at TEXT NOT NULL,
   attempts INT NOT NULL DEFAULT 0, created_at TEXT NOT NULL);
@@ -60,6 +66,10 @@ CREATE TABLE IF NOT EXISTS passport_requests(
 CREATE TABLE IF NOT EXISTS notifications(
   id INTEGER PRIMARY KEY, email TEXT NOT NULL, message TEXT NOT NULL,
   created_at TEXT NOT NULL, is_read INT NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS review_flags(
+  id INTEGER PRIMARY KEY, record_id TEXT NOT NULL, passport_id TEXT DEFAULT '',
+  reason TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'FLAGGED',
+  created_at TEXT NOT NULL, decided_at TEXT DEFAULT '');
 CREATE INDEX IF NOT EXISTS idx_versions_passport ON versions(passport_id, version);
 CREATE INDEX IF NOT EXISTS idx_records_passport ON records(passport_id, sync_status);
 CREATE INDEX IF NOT EXISTS idx_requests_student ON skill_requests(student_email, status);
@@ -100,6 +110,49 @@ class Store:
         for stmt in schema.split(";"):
             if stmt.strip():
                 self._run(stmt)
+        self._migrate()
+        self._backfill_slugs()
+
+    def _migrate(self) -> None:
+        """Additive columns for pre-expansion databases (no migration tool)."""
+        wanted = {
+            "passports": {"public_slug": "TEXT DEFAULT ''"},
+            "versions": {"status": "TEXT NOT NULL DEFAULT 'ACTIVE'",
+                         "superseded_reason": "TEXT DEFAULT ''",
+                         "revoked_record_ids": "TEXT DEFAULT '[]'",
+                         "ipfs_cid": "TEXT DEFAULT ''", "signer_roles": "TEXT DEFAULT '[]'"},
+            "skill_requests": {"ai_summary": "TEXT DEFAULT ''", "ai_score": "INT",
+                               "ai_model": "TEXT DEFAULT ''", "reviewer": "TEXT DEFAULT ''",
+                               "proof_links": "TEXT DEFAULT '[]'",
+                               "instructor_approval": "INT NOT NULL DEFAULT 0",
+                               "career_center_approval": "INT NOT NULL DEFAULT 0",
+                               "instructor_approver": "TEXT DEFAULT ''",
+                               "career_center_approver": "TEXT DEFAULT ''"},
+        }
+        for table, cols in wanted.items():
+            if self.kind == "postgres":
+                for col, ddl in cols.items():
+                    self._run(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {ddl}")
+            else:
+                existing = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})").fetchall()}
+                for col, ddl in cols.items():
+                    if col not in existing:
+                        self._run(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+    @staticmethod
+    def make_slug(first: str, last: str, passport_id: str) -> str:
+        import hashlib, re as _re
+        base = _re.sub(r"[^a-z0-9]+", "-", f"{first}-{last}".lower()).strip("-") or "student"
+        digits = passport_id.replace("BTU-AI-", "")
+        suffix = hashlib.sha256(passport_id.encode()).hexdigest()[:6]
+        return f"{base}-{digits}-{suffix}"
+
+    def _backfill_slugs(self) -> None:
+        for p in self._all("SELECT passport_id, first_name, last_name FROM passports"
+                           " WHERE public_slug IS NULL OR public_slug=''"):
+            self._run("UPDATE passports SET public_slug=? WHERE passport_id=?",
+                      (self.make_slug(p["first_name"], p["last_name"], p["passport_id"]),
+                       p["passport_id"]))
 
     # -- adapter ------------------------------------------------------
     def _sql(self, sql: str) -> str:
@@ -137,20 +190,22 @@ class Store:
                 raise
 
     def _insert_version(self, passport_id, version, issued_at, doc_hash, code,
-                        tx_hash, network, block_number, signature) -> int:
+                        tx_hash, network, block_number, signature, status="ACTIVE",
+                        superseded_reason="", revoked_record_ids="[]", signer_roles="[]") -> int:
         sql = ("INSERT INTO versions(passport_id,version,issued_at,document_hash,verification_code,"
-               "tx_hash,network,block_number,issuer_signature) VALUES (?,?,?,?,?,?,?,?,?)")
+               "tx_hash,network,block_number,issuer_signature,status,superseded_reason,"
+               "revoked_record_ids,signer_roles) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        params = (passport_id, version, issued_at, doc_hash, code, tx_hash,
+                  network, block_number, signature, status, superseded_reason,
+                  revoked_record_ids, signer_roles)
         with self._lock:
             try:
                 cur = self.db.cursor()
                 if self.kind == "postgres":
-                    cur.execute(self._sql(sql) + " RETURNING id",
-                                (passport_id, version, issued_at, doc_hash, code, tx_hash,
-                                 network, block_number, signature))
+                    cur.execute(self._sql(sql) + " RETURNING id", params)
                     vid = cur.fetchone()["id"]
                 else:
-                    cur.execute(sql, (passport_id, version, issued_at, doc_hash, code, tx_hash,
-                                      network, block_number, signature))
+                    cur.execute(sql, params)
                     vid = cur.lastrowid
                 self.db.commit()
                 return vid
@@ -160,14 +215,14 @@ class Store:
 
     def reset(self) -> None:
         for table in ("version_skills", "versions", "records", "passports", "skill_requests",
-                      "verification_codes", "passport_requests", "notifications"):
+                      "verification_codes", "passport_requests", "notifications", "review_flags"):
             self._run(f"DELETE FROM {table}")
 
     # ---- passports -------------------------------------------------
     def register_passport(self, r: dict) -> None:
         """Create the passport identity if absent. Existing identity is
         NEVER overwritten (name / Passport ID / firstIssued are frozen)."""
-        sql = "INSERT INTO passports VALUES (?,?,?,?,?,?,?,?,?)"
+        sql = "INSERT INTO passports VALUES (?,?,?,?,?,?,?,?,?,?)"
         if self.kind == "postgres":
             sql += " ON CONFLICT DO NOTHING"
         else:
@@ -175,7 +230,9 @@ class Store:
         self._run(sql, (r.get("passportId", ""), r.get("studentId", ""), r.get("firstName", ""),
                         r.get("lastName", ""), r.get("email", ""), r.get("program", ""),
                         r.get("educationLevel", ""), r.get("studentStatus", ""),
-                        r.get("firstIssued", "")))
+                        r.get("firstIssued", ""),
+                        self.make_slug(r.get("firstName", ""), r.get("lastName", ""),
+                                       r.get("passportId", ""))))
 
     def get_passport(self, passport_id: str) -> Optional[dict]:
         return self._one("SELECT * FROM passports WHERE passport_id=?", (passport_id,))
@@ -215,11 +272,46 @@ class Store:
     def find_anchor(self, doc_hash: str) -> Optional[dict]:
         return self._one("SELECT * FROM versions WHERE document_hash=?", (doc_hash,))
 
+    def get_passport_by_slug(self, slug: str) -> Optional[dict]:
+        return self._one("SELECT * FROM passports WHERE public_slug=?", (slug,))
+
+    def update_version_ipfs(self, passport_id: str, version: int, cid: str) -> Optional[dict]:
+        self._run("UPDATE versions SET ipfs_cid=? WHERE passport_id=? AND version=?",
+                  (cid, passport_id, version))
+        return self.get_version(passport_id, version)
+
+    # ---- anomaly review flags ---------------------------------------
+    def add_flag(self, record_id: str, passport_id: str, reason: str, created_at: str) -> dict:
+        existing = self._one("SELECT * FROM review_flags WHERE record_id=? AND status='FLAGGED'",
+                             (record_id,))
+        if existing:
+            return existing
+        return self._insert_row("review_flags", {"record_id": record_id,
+                                "passport_id": passport_id, "reason": reason,
+                                "status": "FLAGGED", "created_at": created_at, "decided_at": ""})
+
+    def list_flags(self, status: str | None = None) -> list[dict]:
+        if status:
+            return self._all("SELECT * FROM review_flags WHERE status=? ORDER BY id DESC", (status,))
+        return self._all("SELECT * FROM review_flags ORDER BY id DESC")
+
+    def flag_for(self, record_id: str, status: str) -> Optional[dict]:
+        return self._one("SELECT * FROM review_flags WHERE record_id=? AND status=?",
+                         (record_id, status))
+
+    def decide_flag(self, flag_id: int, status: str, decided_at: str) -> Optional[dict]:
+        self._run("UPDATE review_flags SET status=?,decided_at=? WHERE id=?",
+                  (status, decided_at, flag_id))
+        return self._one("SELECT * FROM review_flags WHERE id=?", (flag_id,))
+
     def add_version(self, passport_id: str, version: int, issued_at: str, doc_hash: str,
                     code: str, tx_hash: str, network: str, block_number: int,
-                    signature: str, skills: list[dict]) -> None:
+                    signature: str, skills: list[dict], status: str = "ACTIVE",
+                    superseded_reason: str = "", revoked_record_ids: str = "[]",
+                    signer_roles: str = "[]") -> None:
         vid = self._insert_version(passport_id, version, issued_at, doc_hash, code,
-                                   tx_hash, network, block_number, signature)
+                                   tx_hash, network, block_number, signature, status,
+                                   superseded_reason, revoked_record_ids, signer_roles)
         for s in skills:
             self._run("INSERT INTO version_skills VALUES (?,?,?,?,?,?,?,?)",
                       (vid, s["recordId"], s["skillId"], s["skillName"], s["skillCategory"],
@@ -269,8 +361,9 @@ class Store:
     def create_request(self, r: dict) -> dict:
         cols = ["passport_id", "student_id", "student_email", "skill_id", "skill_name",
                 "skill_category", "badge_code", "method", "test_score", "evidence_name",
-                "evidence_hash", "evidence_url", "description", "status", "created_at"]
-        vals = tuple(r.get(c, "") if c != "test_score" else r.get(c) for c in cols)
+                "evidence_hash", "evidence_url", "description", "status", "created_at",
+                "ai_summary", "ai_score", "ai_model", "proof_links"]
+        vals = tuple(r.get(c, "") if c not in ("test_score", "ai_score") else r.get(c) for c in cols)
         sql = f"INSERT INTO skill_requests({','.join(cols)}) VALUES ({','.join('?' * len(cols))})"
         with self._lock:
             try:
@@ -297,9 +390,23 @@ class Store:
         return self._all("SELECT * FROM skill_requests ORDER BY id DESC")
 
     def decide_request(self, request_id: int, status: str, note: str, decided_at: str,
-                       record_id: str = "") -> Optional[dict]:
-        self._run("UPDATE skill_requests SET status=?,admin_note=?,decided_at=?,record_id=?"
-                  " WHERE id=?", (status, note, decided_at, record_id, request_id))
+                       record_id: str = "", reviewer: str = "") -> Optional[dict]:
+        self._run("UPDATE skill_requests SET status=?,admin_note=?,decided_at=?,record_id=?,reviewer=?"
+                  " WHERE id=?", (status, note, decided_at, record_id, reviewer, request_id))
+        return self.get_request(request_id)
+
+    def update_request(self, request_id: int, **fields) -> Optional[dict]:
+        if not fields:
+            return self.get_request(request_id)
+        sets = ",".join(f"{k}=?" for k in fields)
+        self._run(f"UPDATE skill_requests SET {sets} WHERE id=?",
+                  (*fields.values(), request_id))
+        return self.get_request(request_id)
+
+    def attest_request(self, request_id: int, role_key: str, approver: str) -> Optional[dict]:
+        col = "instructor" if role_key == "instructor" else "career_center"
+        self._run(f"UPDATE skill_requests SET {col}_approval=1,{col}_approver=? WHERE id=?",
+                  (approver, request_id))
         return self.get_request(request_id)
 
 

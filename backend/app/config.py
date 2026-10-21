@@ -62,6 +62,15 @@ class Settings:
     smtp_from: str = field(default_factory=lambda: os.getenv("SMTP_FROM", ""))
     smtp_tls: bool = field(default_factory=lambda: _bool("SMTP_TLS", True))
 
+    # expansion stubs: stub (deterministic/offline) | real providers later
+    ai_mode: str = field(default_factory=lambda: os.getenv("AI_MODE", "stub"))
+    ipfs_mode: str = field(default_factory=lambda: os.getenv("IPFS_MODE", "stub"))
+    wallet_mode: str = field(default_factory=lambda: os.getenv("WALLET_MODE", "stub"))
+    public_base_url: str = field(default_factory=lambda: os.getenv("PUBLIC_BASE_URL", "http://localhost:5173"))
+    anomaly_batch_threshold: int = field(default_factory=lambda: int(os.getenv("ANOMALY_BATCH_THRESHOLD", "5")))
+    bulk_verify_limit: int = field(default_factory=lambda: int(os.getenv("BULK_VERIFY_LIMIT", "100")))
+    bulk_rate_limit_per_minute: int = field(default_factory=lambda: int(os.getenv("BULK_RATE_LIMIT_PER_MINUTE", "30")))
+
     cors_origins: list[str] = field(default_factory=lambda: [
         o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:8080").split(",") if o.strip()
     ])

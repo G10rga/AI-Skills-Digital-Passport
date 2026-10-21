@@ -81,6 +81,36 @@ app/security.py   admin key + student tokens
 app/main.py       FastAPI endpoints     tests/          pytest suite
 ```
 
+## Expansion (all stub-first, no second pipeline)
+
+Everything below hooks into the same two trigger points: (a) an approved
+skill becoming a `NOT SYNCED` row, and (b) `services.issue_version()`.
+Canonical hashing is untouched (golden parity test guards it); version
+status, revocation, signer roles and IPFS CID are stored alongside.
+
+- Requests v2: stub AI review (`app/ai.py`, `AI_MODE=stub`) scores every
+  submission (`aiSummary/aiScore/aiModel`); Advanced PROOF requests go
+  `NEEDS_TEST` until the quiz is passed; Advanced approvals require
+  Instructor + Career Center attestation (`/admin/skill-requests/{id}/attest`,
+  `GET /issuer/registry` in `app/registry.py`) and the roles are recorded
+  on the issued version. Google Sheets deployments mirror decided
+  requests into a `Skill Requests` tab (DB stays canonical).
+- Revocation: `POST /admin/passports/{id}/skills/{recordId}/revoke`
+  issues a `REVOKED_CONTENT` version; verifiers see *why* an old version
+  is outdated. The brief's Solidity `PassportVersion{ACTIVE,
+  SUPERSEDED, REVOKED_CONTENT}` shape is the future `Web3Anchor`
+  contract mirroring these stored fields.
+- Standards: `GET /.well-known/did.json`, per-version W3C VC
+  (`.../credential`) and Open Badges 3.0 (`.../badges`) exports, IPFS
+  stub publish (`app/ipfs.py`, `IPFS_MODE=stub`).
+- Employer side: `POST /verify/bulk` ( capped, rate-limited),
+  `POST /verify/explain`, public profile `GET /public/{slug}` → `/p/<slug>`.
+- Admin: anomaly preflight in `sync()` → `review_flags` / Needs Review
+  (`ANOMALY_BATCH_THRESHOLD`), dashboard filters, `POST /me/skill-gap`.
+- Polish: QR already on the passport cover; email + notifications on
+  approve/reject/revoke/sync; wallet-pass stub (`app/wallet_pass.py`,
+  `GET /me/passport/wallet`). Tests: `tests/test_expansion.py`.
+
 ## Student skill requests
 
 `GET /skills/catalogue` + `GET /skills/{skillId}/test` (5 scenario

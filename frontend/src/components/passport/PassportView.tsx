@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
-import { Download, Linkedin, Link2, ShieldCheck } from "lucide-react";
+import { Award, Download, Linkedin, Link2, ShieldCheck, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { getBadges, getWalletPass } from "@/lib/api";
 import type { Passport } from "@/lib/types";
 import { PassportDocument } from "./PassportDocument";
 
@@ -50,6 +51,33 @@ export function PassportView({ passport }: { passport: Passport }) {
             <Button variant="ghost" asChild>
               <Link to="/verify" search={{ code: v.verificationCode }}><ShieldCheck /> Verify this version</Link>
             </Button>
+            {passport.publicSlug && (
+              <Button variant="outline" asChild>
+                <Link to="/p/$slug" params={{ slug: passport.publicSlug }}><Link2 /> Shareable verified profile</Link>
+              </Button>
+            )}
+            <Button variant="outline" onClick={async () => {
+              try {
+                const pass = await getWalletPass();
+                const blob = new Blob([JSON.stringify(pass, null, 2)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = `${passport.passportId}-wallet-pass.json`;
+                a.click();
+                toast.success("Wallet pass (stub) downloaded");
+              } catch { toast.error("Wallet pass needs the Python backend"); }
+            }}><Wallet /> Add to Wallet (stub)</Button>
+            <Button variant="outline" onClick={async () => {
+              try {
+                const badges = await getBadges(passport.passportId, v.version);
+                const blob = new Blob([JSON.stringify(badges, null, 2)], { type: "application/json" });
+                const a = document.createElement("a");
+                a.href = URL.createObjectURL(blob);
+                a.download = `${passport.passportId}-V${v.version}-open-badges.json`;
+                a.click();
+                toast.success("Open Badges 3.0 export downloaded");
+              } catch { toast.error("Badges need the Python backend"); }
+            }}><Award /> Open Badges 3.0 export</Button>
           </div>
         </div>
         <div className="rounded-xl border border-border bg-card p-4">
@@ -62,10 +90,12 @@ export function PassportView({ passport }: { passport: Passport }) {
                   className={`flex w-full items-center justify-between rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-secondary ${x.version === v.version ? "bg-secondary font-semibold" : ""}`}
                 >
                   <span>V{x.version} · {x.skills.length} skills</span>
-                  {x.version === latest?.version ? (
+                  {x.status === "REVOKED_CONTENT" ? (
+                    <span className="rounded bg-destructive px-1.5 py-0.5 text-[10px] font-bold text-destructive-foreground">SKILL REVOKED</span>
+                  ) : x.version === latest?.version ? (
                     <span className="rounded bg-success px-1.5 py-0.5 text-[10px] font-bold text-background">LATEST</span>
                   ) : (
-                    <span className="text-[10px] text-muted-foreground">superseded</span>
+                    <span className="text-[10px] text-muted-foreground">superseded{x.supersededReason ? `: ${x.supersededReason}` : ""}</span>
                   )}
                 </button>
               </li>

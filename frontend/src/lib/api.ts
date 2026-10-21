@@ -114,6 +114,11 @@ async function makeVersion(p: Passport, version: number, skills: PassportSkill[]
     txHash,
     network: NETWORK,
     blockNumber: 18_400_000 + parseInt(documentHash.slice(0, 5), 16),
+    status: "ACTIVE",
+    supersededReason: "",
+    revokedRecordIds: [],
+    ipfsCid: "",
+    signerRoles: ["Admin"],
   };
 }
 
@@ -282,6 +287,8 @@ export async function verifyByCode(code: string): Promise<VerifyResult> {
         passport: info,
         version: v,
         recomputedHash: recomputed,
+        versionStatus: v.status ?? "ACTIVE",
+        ...(v.version === latest ? {} : { supersededReason: `Superseded by V${latest}` }),
       };
     }
   }
@@ -410,4 +417,98 @@ export async function listSkillRequests(): Promise<SkillRequest[]> {
 export async function decideSkillRequest(id: number, action: "approve" | "reject", note = ""): Promise<SkillRequest> {
   requireRemote();
   return apiFetch<SkillRequest>(`/admin/skill-requests/${id}/${action}`, { method: "POST", body: JSON.stringify({ note }) });
+}
+
+// ---------- expansion: revocation, credentials, employer, admin ----------
+import type { PublicProfile, ReviewFlag, SkillGapResult } from "./types";
+
+/** POST /admin/skill-requests/:id/attest {role} — multi-signer for Advanced tier */
+export async function attestSkillRequest(id: number, role: "Instructor" | "CareerCenter", approver = ""): Promise<SkillRequest> {
+  requireRemote();
+  return apiFetch<SkillRequest>(`/admin/skill-requests/${id}/attest`, { method: "POST", body: JSON.stringify({ role, approver }) });
+}
+
+/** POST /skill-requests/:id/test — completes a NEEDS_TEST request */
+export async function completeRequestTest(id: number, answers: Record<string, number>): Promise<SkillRequest> {
+  requireRemote();
+  return apiFetch<SkillRequest>(`/skill-requests/${id}/test`, { method: "POST", body: JSON.stringify({ answers }) });
+}
+
+/** POST /admin/passports/:id/skills/:recordId/revoke */
+export async function revokeSkill(passportId: string, recordId: string, reason: string): Promise<unknown> {
+  requireRemote();
+  return apiFetch(`/admin/passports/${passportId}/skills/${recordId}/revoke`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+/** GET /issuer/registry */
+export async function getIssuerRegistry(): Promise<unknown[]> {
+  requireRemote();
+  return apiFetch<unknown[]>("/issuer/registry");
+}
+
+/** GET /.well-known/did.json */
+export async function getDidDocument(): Promise<unknown> {
+  requireRemote();
+  return apiFetch<unknown>("/.well-known/did.json");
+}
+
+/** GET /passports/:id/versions/:n/credential (W3C VC) */
+export async function getCredential(passportId: string, version: number): Promise<unknown> {
+  requireRemote();
+  return apiFetch<unknown>(`/passports/${passportId}/versions/${version}/credential`);
+}
+
+/** GET /passports/:id/versions/:n/badges (Open Badges 3.0) */
+export async function getBadges(passportId: string, version: number): Promise<unknown[]> {
+  requireRemote();
+  return apiFetch<unknown[]>(`/passports/${passportId}/versions/${version}/badges`);
+}
+
+/** POST /passports/:id/versions/:n/publish (IPFS stub) */
+export async function publishVersionPdf(passportId: string, version: number, file: File): Promise<{ cid: string; gatewayUrl: string }> {
+  requireRemote();
+  const fd = new FormData();
+  fd.set("file", file);
+  return apiFetch(`/passports/${passportId}/versions/${version}/publish`, { method: "POST", body: fd });
+}
+
+/** POST /verify/bulk — employer batch verification, no login */
+export async function verifyBulk(codes: string[]): Promise<VerifyResult[]> {
+  if (REMOTE) return apiFetch<VerifyResult[]>("/verify/bulk", { method: "POST", body: JSON.stringify({ codes }) });
+  return Promise.all(codes.map((c) => verifyByCode(c)));
+}
+
+/** POST /verify/explain — plain-language skill explainer (stub LLM) */
+export async function explainSkill(skillId: string, question = ""): Promise<{ answer: string; model: string }> {
+  requireRemote();
+  return apiFetch("/verify/explain", { method: "POST", body: JSON.stringify({ skillId, question }) });
+}
+
+/** GET /public/:slug — shareable verified profile */
+export async function getPublicProfile(slug: string): Promise<PublicProfile> {
+  requireRemote();
+  return apiFetch<PublicProfile>(`/public/${slug}`);
+}
+
+/** POST /me/skill-gap — job description vs my verified skills */
+export async function submitSkillGap(jobDescription: string): Promise<SkillGapResult> {
+  requireRemote();
+  return apiFetch<SkillGapResult>("/me/skill-gap", { method: "POST", body: JSON.stringify({ jobDescription }) });
+}
+
+/** GET /me/passport/wallet — wallet pass stub (Google/Apple shaped JSON) */
+export async function getWalletPass(): Promise<unknown> {
+  requireRemote();
+  return apiFetch<unknown>("/me/passport/wallet");
+}
+
+/** GET /admin/needs-review + release/reject */
+export async function listNeedsReview(): Promise<ReviewFlag[]> {
+  requireRemote();
+  return apiFetch<ReviewFlag[]>("/admin/needs-review");
+}
+
+export async function decideNeedsReview(id: number, action: "release" | "reject"): Promise<ReviewFlag> {
+  requireRemote();
+  return apiFetch<ReviewFlag>(`/admin/needs-review/${id}/${action}`, { method: "POST" });
 }

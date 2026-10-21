@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { decidePassportRequest, decideSkillRequest, listPassportRequests, listPassports, listRecords, listSkillRequests, resetDemoData, syncFromSheet } from "@/lib/api";
+import { attestSkillRequest, decideNeedsReview, decidePassportRequest, decideSkillRequest, listNeedsReview, listPassportRequests, listPassports, listRecords, listSkillRequests, resetDemoData, revokeSkill, syncFromSheet } from "@/lib/api";
 import type { PassportRequest, SkillRequest, SyncResult } from "@/lib/types";
 
 export const Route = createFileRoute("/admin")({
@@ -53,7 +53,27 @@ function AdminPage() {
       qc.invalidateQueries({ queryKey: ["records"] });
       toast.success(r.status === "APPROVED" ? `${r.skillName} approved as ${r.recordId} — run Sync to issue it` : "Request rejected");
     },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
   });
+  const attest = useMutation({
+    mutationFn: ({ id, role }: { id: number; role: "Instructor" | "CareerCenter" }) => attestSkillRequest(id, role, role),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["skill-requests"] }); toast.success("Attestation recorded"); },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
+  });
+  const flags = useQuery({ queryKey: ["needs-review"], queryFn: listNeedsReview });
+  const decideFlag = useMutation({
+    mutationFn: ({ id, action }: { id: number; action: "release" | "reject" }) => decideNeedsReview(id, action),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["needs-review"] }); toast.success("Review flag updated — run Sync to process released records"); },
+  });
+  const revoke = useMutation({
+    mutationFn: ({ passportId, recordId }: { passportId: string; recordId: string }) =>
+      revokeSkill(passportId, recordId, window.prompt("Reason for revocation (shown to verifiers):") ?? "Revoked by BTU"),
+    onSuccess: () => { qc.invalidateQueries(); toast.success("Skill revoked — new passport version issued"); },
+    onError: (e: Error) => toast.error(e.message.replace(/^\d+ /, "")),
+  });
+  const [reqStatusFilter, setReqStatusFilter] = useState("");
+  const [reqSkillFilter, setReqSkillFilter] = useState("");
+  const [reqDateFilter, setReqDateFilter] = useState("");
   const passports = useQuery({ queryKey: ["passports"], queryFn: listPassports });
   const [q, setQ] = useState("");
   const [last, setLast] = useState<SyncResult | null>(null);
@@ -106,7 +126,7 @@ function AdminPage() {
       {last && (
         <div className="mt-6 rounded-xl border border-border bg-card p-4 text-sm">
           <div className="font-display">Last sync</div>
-          <p>{last.processed} processed · {last.synced} added · {last.duplicates} duplicates skipped · {last.errors} errors</p>
+          <p>{last.processed} processed · {last.synced} added · {last.duplicates} duplicates skipped · {last.errors} errors · {last.flagged ?? 0} flagged for review</p>
           {last.log.filter((l) => l.status !== "SYNCED").map((l) => (
             <div key={l.recordId} className="text-muted-foreground">{l.recordId}: {l.status} — {l.note}</div>
           ))}
@@ -118,7 +138,8 @@ function AdminPage() {
           <TabsTrigger value="records"><Sheet /> Skill records</TabsTrigger>
           <TabsTrigger value="passports">Passports</TabsTrigger>
           <TabsTrigger value="prequests">Passport requests {(passportRequests.data ?? []).filter((r) => r.status === "PENDING_STAFF").length > 0 && `(${(passportRequests.data ?? []).filter((r) => r.status === "PENDING_STAFF").length})`}</TabsTrigger>
-          <TabsTrigger value="requests">Skill requests {(skillRequests.data ?? []).filter((r) => r.status === "PENDING").length > 0 && `(${(skillRequests.data ?? []).filter((r) => r.status === "PENDING").length})`}</TabsTrigger>
+          <TabsTrigger value="requests">Skill requests {(skillRequests.data ?? []).filter((r) => ["PENDING", "PENDING_ADMIN", "NEEDS_TEST"].includes(r.status)).length > 0 && `(${(skillRequests.data ?? []).filter((r) => ["PENDING", "PENDING_ADMIN", "NEEDS_TEST"].includes(r.status)).length})`}</TabsTrigger>
+          <TabsTrigger value="review">Needs review {(flags.data ?? []).length > 0 && `(${(flags.data ?? []).length})`}</TabsTrigger>
         </TabsList>
         <TabsContent value="records" className="mt-4">
           <Input placeholder="Search name, Passport ID, skill…" value={q} onChange={(e) => setQ(e.target.value)} className="mb-3 max-w-sm" />
@@ -128,7 +149,7 @@ function AdminPage() {
                 <TableRow>
                   <TableHead>Record</TableHead><TableHead>Student</TableHead><TableHead>Passport</TableHead>
                   <TableHead>Skill</TableHead><TableHead>Category</TableHead><TableHead>Earned</TableHead>
-                  <TableHead>Status</TableHead><TableHead>Version</TableHead><TableHead>Notes</TableHead>
+                  <TableHead>Status</TableHead><TableHead>Version</TableHead><TableHead>Notes</TableHead><TableHead>Revoke</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -145,6 +166,9 @@ function AdminPage() {
                       <TableCell><span className={`rounded px-2 py-0.5 text-[10px] font-bold ${statusStyle[st]}`}>{st}</span></TableCell>
                       <TableCell>{r.syncedVersion ?? "–"}</TableCell>
                       <TableCell className="max-w-48 text-xs text-muted-foreground">{r.syncNotes}</TableCell>
+                      <TableCell>{r.syncStatus === "SYNCED" && !r.syncNotes?.startsWith("REVOKED") && (
+                        <Button size="sm" variant="destructive" onClick={() => revoke.mutate({ passportId: r.passportId, recordId: r.recordId })}>Revoke</Button>
+                      )}</TableCell>
                     </TableRow>
                   );
                 })}
@@ -187,6 +211,14 @@ function AdminPage() {
             <p className="text-sm text-muted-foreground">Skill requests need the Python backend (VITE_API_BASE_URL).</p>
           ) : (
             <div className="rounded-xl border border-border bg-card">
+              <div className="flex flex-wrap gap-2 border-b border-border p-3">
+                <select value={reqStatusFilter} onChange={(e) => setReqStatusFilter(e.target.value)} className="rounded-md border border-input bg-background px-2 py-1 text-sm">
+                  <option value="">All statuses</option>
+                  {["SUBMITTED", "AI_REVIEWED", "NEEDS_TEST", "PENDING_ADMIN", "APPROVED", "REJECTED"].map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <Input placeholder="Filter by skill…" value={reqSkillFilter} onChange={(e) => setReqSkillFilter(e.target.value)} className="w-48" />
+                <Input type="date" value={reqDateFilter} onChange={(e) => setReqDateFilter(e.target.value)} className="w-44" />
+              </div>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -195,19 +227,26 @@ function AdminPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {(skillRequests.data ?? []).map((r: SkillRequest) => (
+                  {(skillRequests.data ?? []).filter((r) => (!reqStatusFilter || r.status === reqStatusFilter) && (!reqSkillFilter || r.skillName.toLowerCase().includes(reqSkillFilter.toLowerCase())) && (!reqDateFilter || r.createdAt.startsWith(reqDateFilter))).map((r: SkillRequest) => (
                     <TableRow key={r.id}>
                       <TableCell>{r.studentEmail}<div className="text-xs text-muted-foreground">{r.passportId}</div></TableCell>
                       <TableCell>{r.skillName}<div className="text-xs text-muted-foreground">{r.skillCategory}</div></TableCell>
                       <TableCell className="max-w-56 text-xs">
                         {r.method === "TEST" ? <>Test score: <b>{r.testScore}%</b></> : <>{r.evidenceName || r.evidenceUrl || "Proof"}<div className="break-all font-mono text-[10px] text-muted-foreground">{r.evidenceHash && `sha256:${r.evidenceHash.slice(0, 16)}…`}</div></>}
                         {r.description && <div className="text-muted-foreground">{r.description}</div>}
+                        {r.aiSummary && <div className="mt-1 text-muted-foreground">AI ({r.aiScore}%): {r.aiSummary}</div>}
+                        {r.skillCategory === "AI Advanced Skill" && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            <Button size="sm" variant={r.instructorApproval ? "secondary" : "outline"} disabled={!!r.instructorApproval} onClick={() => attest.mutate({ id: r.id, role: "Instructor" })}>Instructor {r.instructorApproval ? "✓" : ""}</Button>
+                            <Button size="sm" variant={r.careerCenterApproval ? "secondary" : "outline"} disabled={!!r.careerCenterApproval} onClick={() => attest.mutate({ id: r.id, role: "CareerCenter" })}>Career Center {r.careerCenterApproval ? "✓" : ""}</Button>
+                          </div>
+                        )}
                       </TableCell>
                       <TableCell><span className={`rounded px-2 py-0.5 text-[10px] font-bold ${statusStyle[r.status] ?? "bg-secondary"}`}>{r.status}</span>
                         {r.recordId && <div className="mt-1 text-xs text-muted-foreground">{r.recordId} · {r.recordSyncStatus ?? ""}</div>}</TableCell>
-                      <TableCell><Input placeholder="Optional note…" value={notes[r.id] ?? r.adminNote ?? ""} onChange={(e) => setNotes({ ...notes, [r.id]: e.target.value })} className="w-40" disabled={r.status !== "PENDING"} /></TableCell>
+                      <TableCell><Input placeholder="Optional note…" value={notes[r.id] ?? r.adminNote ?? ""} onChange={(e) => setNotes({ ...notes, [r.id]: e.target.value })} className="w-40" disabled={!["PENDING", "PENDING_ADMIN"].includes(r.status)} />{r.reviewer && <div className="mt-1 text-xs text-muted-foreground">Reviewer: {r.reviewer}</div>}</TableCell>
                       <TableCell>
-                        {r.status === "PENDING" ? (
+                        {["PENDING", "PENDING_ADMIN"].includes(r.status) ? (
                           <div className="flex gap-2">
                             <Button size="sm" onClick={() => decide.mutate({ id: r.id, action: "approve" })}>Approve</Button>
                             <Button size="sm" variant="destructive" onClick={() => decide.mutate({ id: r.id, action: "reject" })}>Reject</Button>
@@ -222,6 +261,32 @@ function AdminPage() {
               <p className="border-t border-border p-3 text-xs text-muted-foreground">Approving writes a NOT SYNCED row into the sheet dataset ({`Admin → Sync`} then issues it as a new passport version). Nothing reaches a passport without both an admin approval and a sync.</p>
             </div>
           )}
+        </TabsContent>
+        <TabsContent value="review" className="mt-4">
+          <div className="rounded-xl border border-border bg-card">
+            <Table>
+              <TableHeader>
+                <TableRow><TableHead>Record</TableHead><TableHead>Passport</TableHead><TableHead>Reason flagged</TableHead><TableHead>Flagged</TableHead><TableHead>Decision</TableHead></TableRow>
+              </TableHeader>
+              <TableBody>
+                {(flags.data ?? []).map((f) => (
+                  <TableRow key={f.id}>
+                    <TableCell className="font-mono text-xs">{f.recordId}</TableCell>
+                    <TableCell className="font-mono text-xs">{f.passportId}</TableCell>
+                    <TableCell className="text-xs">{f.reason}</TableCell>
+                    <TableCell className="text-xs">{f.createdAt.slice(0, 10)}</TableCell>
+                    <TableCell>
+                      <div className="flex gap-2">
+                        <Button size="sm" onClick={() => decideFlag.mutate({ id: f.id, action: "release" })}>Release to sync</Button>
+                        <Button size="sm" variant="destructive" onClick={() => decideFlag.mutate({ id: f.id, action: "reject" })}>Reject</Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            {(flags.data ?? []).length === 0 && <p className="p-4 text-sm text-muted-foreground">Nothing flagged. Anomaly checks run inside Sync before any new version is issued.</p>}
+          </div>
         </TabsContent>
         <TabsContent value="passports" className="mt-4">
           <div className="rounded-xl border border-border bg-card">

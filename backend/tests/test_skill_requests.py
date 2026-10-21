@@ -66,8 +66,13 @@ def test_failing_test_creates_no_request():
 def test_full_pipeline_test_request_approve_sync_new_version():
     before = client.get("/passports/BTU-AI-000125").json()
     skill, req = submit_passing_test()
-    assert req["status"] == "PENDING" and req["testScore"] == 100 and req["method"] == "TEST"
+    assert req["status"] == "PENDING_ADMIN" and req["testScore"] == 100 and req["method"] == "TEST"
+    assert req["aiScore"] is not None and req["aiSummary"] and req["aiModel"]
 
+    if skill["skillCategory"] == "AI Advanced Skill":
+        for role in ("Instructor", "CareerCenter"):
+            r = client.post(f"/admin/skill-requests/{req['id']}/attest", json={"role": role})
+            assert r.status_code == 200, r.text
     approved = client.post(f"/admin/skill-requests/{req['id']}/approve", json={}).json()
     assert approved["status"] == "APPROVED" and approved["recordSyncStatus"] == "NOT SYNCED"
     rec = next(r for r in client.get("/records").json() if r["recordId"] == approved["recordId"])

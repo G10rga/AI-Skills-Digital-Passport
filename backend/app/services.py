@@ -71,10 +71,25 @@ def to_skill(r: dict) -> dict:
 
 
 # ------------------------------------------------------------- versioning
+def _json_list(raw) -> list:
+    import json as _json
+    if isinstance(raw, list):
+        return raw
+    try:
+        v = _json.loads(raw or "[]")
+        return v if isinstance(v, list) else []
+    except Exception:
+        return []
+
+
 def issue_version(store, passport: dict, version: int, skills: list[dict],
-                  issued_at: str, ctx) -> PassportVersion:
+                  issued_at: str, ctx, status: str = "ACTIVE", superseded_reason: str = "",
+                  revoked_record_ids: list[str] | None = None,
+                  signer_roles: list[str] | None = None) -> PassportVersion:
     """Hash canonical content -> sign as BTU -> anchor on-chain -> persist.
-    `ctx` carries issuer/anchor/settings (see main.make_context)."""
+    Canonical payload is unchanged (golden-hash parity); status/revocation/
+    signer metadata is stored alongside, never inside the hashed payload."""
+    import json as _json
     doc_hash = canonical.document_hash(
         passport["passport_id"], passport["first_name"], passport["last_name"],
         passport["first_issued"], version, skills, ctx.issuer_did)
@@ -82,7 +97,10 @@ def issue_version(store, passport: dict, version: int, skills: list[dict],
     code = canonical.verification_code(passport["passport_id"], version, doc_hash)
     signature = ctx.signer.sign(doc_hash)
     store.add_version(passport["passport_id"], version, issued_at, doc_hash, code,
-                      anchor.tx_hash, anchor.network, anchor.block_number, signature, skills)
+                      anchor.tx_hash, anchor.network, anchor.block_number, signature, skills,
+                      status=status, superseded_reason=superseded_reason,
+                      revoked_record_ids=_json.dumps(revoked_record_ids or []),
+                      signer_roles=_json.dumps(signer_roles or ["Admin"]))
     return version_model(store.get_version(passport["passport_id"], version))
 
 
@@ -94,16 +112,24 @@ def version_model(v: dict) -> PassportVersion:
                               badgeCode=s["badge_code"], skillDescription=s["skill_description"],
                               dateEarned=s["date_earned"]) for s in v["skills"]],
         documentHash=v["document_hash"], verificationCode=v["verification_code"],
-        txHash=v["tx_hash"], network=v["network"], blockNumber=v["block_number"])
+        txHash=v["tx_hash"], network=v["network"], blockNumber=v["block_number"],
+        status=v.get("status") or "ACTIVE", supersededReason=v.get("superseded_reason") or "",
+        revokedRecordIds=_json_list(v.get("revoked_record_ids")),
+        ipfsCid=v.get("ipfs_cid") or "", signerRoles=_json_list(v.get("signer_roles")))
 
 
 def passport_model(store, row: dict) -> Passport:
+    versions = [version_model(v) for v in store.get_versions(row["passport_id"])]
+    for vm in versions[:-1]:  # derived, so issued versions stay immutable
+        if vm.status == "ACTIVE":
+            vm.status = "SUPERSEDED"
     return Passport(
         passportId=row["passport_id"], studentId=row["student_id"],
         firstName=row["first_name"], lastName=row["last_name"], email=row["email"],
         program=row["program"], educationLevel=row["education_level"],
         studentStatus=row["student_status"], firstIssued=row["first_issued"],
-        versions=[version_model(v) for v in store.get_versions(row["passport_id"])])
+        publicSlug=row.get("public_slug") or "",
+        versions=versions)
 
 
 def passport_info(row: dict) -> PassportInfo:
@@ -168,6 +194,36 @@ def sync(store, ctx, sheet: Optional[SheetSource] = None) -> SyncResult:
             continue
         by_passport.setdefault(r["passportId"], []).append(r)
 
+    # --- anomaly preflight: hold suspicious batches out of issuance ---
+    threshold = getattr(ctx.settings, "anomaly_batch_threshold", 5) if ctx and ctx.settings else 5
+    for passport_id in list(by_passport):
+        recs = by_passport[passport_id]
+        reasons: dict[str, str] = {}
+        if len(recs) > threshold:
+            for r in recs:
+                if not store.flag_for(r["recordId"], "RELEASED"):
+                    reasons[r["recordId"]] = (f"{len(recs)} skills for one student in one sync "
+                                              f"batch (threshold {threshold})")
+        for r in recs:
+            req = next((q for q in store.list_requests()
+                        if q.get("record_id") == r["recordId"] and q["status"] == "REJECTED"), None)
+            if req and not store.flag_for(r["recordId"], "RELEASED"):
+                reasons[r["recordId"]] = "Record matches a REJECTED skill request"
+        if reasons:
+            kept = []
+            for r in recs:
+                if r["recordId"] in reasons:
+                    store.add_flag(r["recordId"], passport_id, reasons[r["recordId"]], now)
+                    result.flagged += 1
+                    result.log.append(SyncLogEntry(recordId=r["recordId"], status="NEEDS_REVIEW",
+                                                   note=reasons[r["recordId"]]))
+                else:
+                    kept.append(r)
+            if kept:
+                by_passport[passport_id] = kept
+            else:
+                del by_passport[passport_id]
+
     for passport_id, recs in by_passport.items():
         passport = store.get_passport(passport_id)
         prev = store.get_versions(passport_id)
@@ -177,12 +233,30 @@ def sync(store, ctx, sheet: Optional[SheetSource] = None) -> SyncResult:
             "skillCategory": s["skill_category"], "badgeCode": s["badge_code"],
             "skillDescription": s["skill_description"], "dateEarned": s["date_earned"]}
             for s in (prev[-1]["skills"] if prev else [])]
+        roles = ["Admin"]
+        for r in recs:
+            q = next((x for x in store.list_requests() if x.get("record_id") == r["recordId"]), None)
+            if q:
+                if q.get("instructor_approval") and "Instructor" not in roles:
+                    roles.append("Instructor")
+                if q.get("career_center_approval") and "CareerCenter" not in roles:
+                    roles.append("CareerCenter")
         issue_version(store, passport, next_num,
-                      prev_skills + [to_skill(r) for r in recs], now, ctx)
+                      prev_skills + [to_skill(r) for r in recs], now, ctx, signer_roles=roles)
         for r in recs:
             mark(r, "SYNCED", f"V{next_num}", None, f"{passport_id} → V{next_num}")
             result.synced += 1
         result.passports_updated.append({"passportId": passport_id, "newVersion": next_num})
+        if passport.get("email"):
+            store.add_notification(passport["email"],
+                                   f"Your AI Skills Digital Passport {passport_id} was updated to V{next_num}.", now)
+            try:
+                from .mailer import send_email
+                send_email(ctx.settings, passport["email"],
+                           "Your BTU AI Skills Passport was updated",
+                           f"Your AI Skills Digital Passport {passport_id} is now at version V{next_num}.")
+            except Exception:
+                pass
 
     if sheet is not None and write_back:
         try:
@@ -215,12 +289,25 @@ def verify_by_code(store, code: str, ctx) -> VerifyResult:
     latest = versions[-1]["version"]
     from .issuer import IssuerSigner
     issuer_ok = IssuerSigner.verify(ctx.signer.public_key_b64(), v["issuer_signature"], v["document_hash"])
+    latest_v = versions[-1]
+    reason = None
+    if v["version"] != latest:
+        revoked_here = set(_json_list(latest_v.get("revoked_record_ids")))
+        mine = {s["record_id"] for s in v["skills"]}
+        if latest_v.get("status") == "REVOKED_CONTENT" and revoked_here & mine:
+            names = [s["skill_name"] for s in v["skills"] if s["record_id"] in revoked_here]
+            reason = (f"outdated because a skill was later revoked: {', '.join(names)}"
+                      + (f" ({latest_v.get('superseded_reason')})" if latest_v.get("superseded_reason") else ""))
+        else:
+            reason = f"Superseded by V{latest}"
     return VerifyResult(
         found=True, documentAuthentic=recomputed == v["document_hash"],
         issuerAuthentic=issuer_ok, isLatest=v["version"] == latest, latestVersion=latest,
         issuer=issuer_model(ctx), passport=passport_info(passport),
         version=version_model(v), recomputedHash=recomputed,
-        issuerSignature=v["issuer_signature"])
+        issuerSignature=v["issuer_signature"],
+        versionStatus=latest_v.get("status") if v["version"] == latest else v.get("status"),
+        supersededReason=reason)
 
 
 def verify_document(store, passport: PassportInfo, version: int,
@@ -279,33 +366,50 @@ def _validate_new_request(store, passport: dict, skill_id: str) -> dict:
     if skill_id in owned:
         raise ValueError("Skill already on your passport")
     pending = [q for q in store.list_requests(passport["email"])
-               if q["skill_id"] == skill_id and q["status"] == "PENDING"]
+               if q["skill_id"] == skill_id and q["status"] in PENDING_STATUSES]
     if pending:
         raise ValueError("You already have a pending request for this skill")
     return item
 
 
+PENDING_STATUSES = ("SUBMITTED", "AI_REVIEWED", "NEEDS_TEST", "PENDING_ADMIN", "PENDING")
+
+
+def _ai_review(item: dict, reasoning: str, proof_links: list[str], method: str,
+               test_score: int | None = None) -> dict:
+    from .ai import StubReviewer
+    return StubReviewer().review(item, reasoning, proof_links, method, test_score)
+
+
 def submit_test_request(store, passport: dict, skill_id: str,
                         answers: dict, description: str = "") -> dict:
     from .assessments import grade
+    import json as _json
     item = _validate_new_request(store, passport, skill_id)
     score, passed, _ = grade(item["skillCategory"], answers)
     if not passed:
         raise ValueError(f"Test not passed: {score}% (need 70%). You can retake it.")
+    ai = _ai_review(item, description, [], "TEST", score)
     return store.create_request({
         "passport_id": passport["passport_id"], "student_id": passport["student_id"],
         "student_email": passport["email"], "skill_id": item["skillId"],
         "skill_name": item["skillName"], "skill_category": item["skillCategory"],
         "badge_code": item["badgeCode"], "method": "TEST", "test_score": score,
-        "description": description, "status": "PENDING", "created_at": now_iso()})
+        "description": description, "status": "PENDING_ADMIN", "created_at": now_iso(),
+        "ai_summary": ai["summary"], "ai_score": ai["score"], "ai_model": ai["model"],
+        "proof_links": _json.dumps([])})
 
 
 def submit_proof_request(store, passport: dict, skill_id: str, description: str,
                          evidence_name: str = "", evidence_hash: str = "",
                          evidence_url: str = "") -> dict:
+    import json as _json
     item = _validate_new_request(store, passport, skill_id)
     if not (evidence_name or evidence_url):
         raise ValueError("Upload a proof file or provide an evidence URL")
+    links = [evidence_url] if evidence_url else []
+    ai = _ai_review(item, description, links, "PROOF")
+    status = "NEEDS_TEST" if item["skillCategory"] == "AI Advanced Skill" else "PENDING_ADMIN"
     return store.create_request({
         "passport_id": passport["passport_id"], "student_id": passport["student_id"],
         "student_email": passport["email"], "skill_id": item["skillId"],
@@ -313,7 +417,49 @@ def submit_proof_request(store, passport: dict, skill_id: str, description: str,
         "badge_code": item["badgeCode"], "method": "PROOF", "test_score": None,
         "evidence_name": evidence_name, "evidence_hash": evidence_hash,
         "evidence_url": evidence_url, "description": description,
-        "status": "PENDING", "created_at": now_iso()})
+        "status": status, "created_at": now_iso(),
+        "ai_summary": ai["summary"], "ai_score": ai["score"], "ai_model": ai["model"],
+        "proof_links": _json.dumps(links)})
+
+
+def complete_request_test(store, request_id: int, email: str, answers: dict) -> dict:
+    from .assessments import grade
+    req = store.get_request(request_id)
+    if not req or req["student_email"].lower() != email.lower():
+        raise ValueError("Request not found")
+    if req["status"] != "NEEDS_TEST":
+        raise ValueError(f"Request is {req['status'].lower()}, not waiting for a test")
+    score, passed, _ = grade(req["skill_category"], answers)
+    if not passed:
+        raise ValueError(f"Test not passed: {score}% (need 70%). You can retake it.")
+    ai = _ai_review(catalogue_item(store, req["skill_id"]) or {}, req["description"] or "",
+                    _json_list(req.get("proof_links")), "PROOF", score)
+    return store.update_request(request_id, test_score=score, status="PENDING_ADMIN",
+                                ai_summary=ai["summary"], ai_score=ai["score"], ai_model=ai["model"])
+
+
+def attest_request(store, request_id: int, role: str, approver: str = "") -> dict:
+    from .registry import ATTEST_ROLES
+    req = store.get_request(request_id)
+    if not req:
+        raise ValueError("Request not found")
+    if req["status"] not in PENDING_STATUSES:
+        raise ValueError(f"Request already {req['status'].lower()}")
+    if role not in ATTEST_ROLES:
+        raise ValueError("Role must be Instructor or CareerCenter")
+    return store.attest_request(request_id, ATTEST_ROLES[role], approver or role)
+
+
+def _notify_student(store, ctx, email: str, subject: str, body: str) -> None:
+    if not email:
+        return
+    store.add_notification(email, body, now_iso())
+    if ctx is not None:
+        try:
+            from .mailer import send_email
+            send_email(ctx.settings, email, subject, body)
+        except Exception:
+            pass
 
 
 def next_record_id(store) -> str:
@@ -326,7 +472,8 @@ def next_record_id(store) -> str:
 
 
 def approve_request(store, request_id: int, note: str = "",
-                    sheet: Optional[SheetSource] = None) -> dict:
+                    sheet: Optional[SheetSource] = None, reviewer: str = "",
+                    ctx=None) -> dict:
     """Approval writes a NOT SYNCED row into the sheet dataset (and the
     real sheet when a live source is configured). The existing Sync then
     turns it into a new anchored passport version — same pipeline as
@@ -334,8 +481,12 @@ def approve_request(store, request_id: int, note: str = "",
     req = store.get_request(request_id)
     if not req:
         raise ValueError("Request not found")
-    if req["status"] != "PENDING":
-        raise ValueError(f"Request already {req['status'].lower()}")
+    if req["status"] not in ("PENDING", "PENDING_ADMIN"):
+        raise ValueError(f"Request already {req['status'].lower()}" if req["status"] != "NEEDS_TEST"
+                         else "Request still needs a passing test before approval")
+    if req["skill_category"] == "AI Advanced Skill" and not (
+            req.get("instructor_approval") and req.get("career_center_approval")):
+        raise ValueError("AI Advanced Skill requires Instructor + Career Center attestation before approval")
     passport = store.get_passport(req["passport_id"])
     item = catalogue_item(store, req["skill_id"]) or {}
     record = {
@@ -355,16 +506,134 @@ def approve_request(store, request_id: int, note: str = "",
             sheet.append_record(record)
         except Exception:
             pass  # DB mirror already holds the row; sheet append is best-effort
-    return store.decide_request(request_id, "APPROVED", note, now_iso(), record["recordId"])
+        mirror = getattr(sheet, "mirror_request", None)
+        if mirror:
+            try:
+                mirror({**req, "status": "APPROVED", "record_id": record["recordId"]})
+            except Exception:
+                pass
+    out = store.decide_request(request_id, "APPROVED", note, now_iso(), record["recordId"], reviewer)
+    _notify_student(store, ctx, req["student_email"], "Skill request approved",
+                    f"Your request for {req['skill_name']} was approved. It will appear on your "
+                    f"passport at the next sync.")
+    return out
 
 
-def reject_request(store, request_id: int, note: str = "") -> dict:
+def reject_request(store, request_id: int, note: str = "", reviewer: str = "", ctx=None) -> dict:
     req = store.get_request(request_id)
     if not req:
         raise ValueError("Request not found")
-    if req["status"] != "PENDING":
+    if req["status"] not in PENDING_STATUSES:
         raise ValueError(f"Request already {req['status'].lower()}")
-    return store.decide_request(request_id, "REJECTED", note, now_iso())
+    out = store.decide_request(request_id, "REJECTED", note, now_iso(), "", reviewer)
+    _notify_student(store, ctx, req["student_email"], "Skill request rejected",
+                    f"Your request for {req['skill_name']} was rejected. {note}".strip())
+    return out
+
+
+# ------------------------------------------------------------ revocation
+def revoke_skill(store, passport_id: str, record_id: str, reason: str, ctx,
+                 sheet: Optional[SheetSource] = None) -> PassportVersion:
+    passport = store.get_passport(passport_id)
+    if not passport:
+        raise ValueError("Passport not found")
+    versions = store.get_versions(passport_id)
+    if not versions:
+        raise ValueError("Passport has no issued versions")
+    latest = versions[-1]
+    target = next((s for s in latest["skills"] if s["record_id"] == record_id), None)
+    if not target:
+        raise ValueError("Skill is not on the latest passport version")
+    kept = [{"recordId": s["record_id"], "skillId": s["skill_id"], "skillName": s["skill_name"],
+             "skillCategory": s["skill_category"], "badgeCode": s["badge_code"],
+             "skillDescription": s["skill_description"], "dateEarned": s["date_earned"]}
+            for s in latest["skills"] if s["record_id"] != record_id]
+    next_num = latest["version"] + 1
+    version = issue_version(store, passport, next_num, kept, now_iso(), ctx,
+                            status="REVOKED_CONTENT",
+                            superseded_reason=reason or "Skill revoked by BTU",
+                            revoked_record_ids=[record_id], signer_roles=["Admin"])
+    store.update_record_sync(record_id, "SYNCED", f"V{next_num}", sheet_timestamp(now_iso()),
+                             f"REVOKED: {reason or 'revoked by BTU'}")
+    if sheet is not None:
+        try:
+            sheet.write_back([{"recordId": record_id, "_sheetRow": None, "syncStatus": "SYNCED",
+                               "syncedVersion": f"V{next_num}", "syncedAt": sheet_timestamp(now_iso()),
+                               "syncNotes": f"REVOKED: {reason or 'revoked by BTU'}"}])
+        except Exception:
+            pass
+    _notify_student(store, ctx, passport.get("email", ""), "A skill was revoked",
+                    f"The skill {target['skill_name']} was removed from your passport "
+                    f"{passport_id} (now V{next_num}). Reason: {reason or 'revoked by BTU'}")
+    return version
+
+
+# ------------------------------------------- credentials / badges / DID
+def did_document(ctx) -> dict:
+    from .registry import issuer_registry
+    return {
+        "@context": ["https://www.w3.org/ns/did/v1", "https://w3id.org/security/suites/ed25519-2020/v1"],
+        "id": ctx.issuer_did,
+        "verificationMethod": [{
+            "id": f"{ctx.issuer_did}#key-1", "type": "Ed25519VerificationKey2020",
+            "controller": ctx.issuer_did, "publicKeyBase64": ctx.signer.public_key_b64()}],
+        "assertionMethod": [f"{ctx.issuer_did}#key-1"],
+        "service": [{"id": f"{ctx.issuer_did}#issuer-registry", "type": "IssuerRegistry",
+                     "serviceEndpoint": "/issuer/registry"}],
+        "roles": [r["role"] for r in issuer_registry(ctx)],
+    }
+
+
+def build_credential(store, passport: dict, v: dict, ctx) -> dict:
+    vm = version_model(v)
+    return {
+        "@context": ["https://www.w3.org/2018/credentials/v1"],
+        "type": ["VerifiableCredential", "BTUAISkillsPassport"],
+        "issuer": ctx.issuer_did,
+        "issuanceDate": v["issued_at"],
+        "credentialSubject": {
+            "studentId": passport["student_id"], "passportId": passport["passport_id"],
+            "skills": [{"skillId": s.skill_id, "skillName": s.skill_name,
+                        "skillCategory": s.skill_category, "badgeCode": s.badge_code,
+                        "dateEarned": s.date_earned} for s in vm.skills]},
+        "proof": {"type": "Ed25519Signature2020", "verificationMethod": f"{ctx.issuer_did}#key-1",
+                  "proofPurpose": "assertionMethod", "proofValue": v["issuer_signature"],
+                  "documentHash": v["document_hash"], "verificationCode": v["verification_code"]},
+    }
+
+
+def build_badges(store, passport: dict, v: dict, ctx, base_url: str = "") -> list[dict]:
+    out = []
+    for s in version_model(v).skills:
+        verify_url = f"{base_url}/verify?code={v['verification_code']}"
+        out.append({
+            "@context": ["https://www.w3.org/2018/credentials/v1",
+                         "https://purl.imsglobal.org/spec/ob/v3p0/context-3.0.3.json"],
+            "type": ["VerifiableCredential", "OpenBadgeCredential"],
+            "issuer": {"id": ctx.issuer_did, "type": "Profile", "name": ctx.issuer_name},
+            "issuanceDate": v["issued_at"],
+            "credentialSubject": {"studentId": passport["student_id"],
+                                  "achievement": {"id": s.badge_code, "type": "Achievement",
+                                                  "name": s.skill_name, "description": s.skill_description,
+                                                  "criteria": {"narrative": s.skill_category}}},
+            "evidence": [{"id": verify_url, "type": "Evidence", "name": "BTU verification"}],
+            "proof": {"type": "Ed25519Signature2020", "verificationMethod": f"{ctx.issuer_did}#key-1",
+                      "proofValue": v["issuer_signature"], "documentHash": v["document_hash"]},
+        })
+    return out
+
+
+def skill_gap(store, passport: dict, job_description: str) -> dict:
+    from .ai import StubSkillExtractor
+    catalogue = skill_catalogue(store)
+    required = StubSkillExtractor().extract(job_description, catalogue)
+    versions = store.get_versions(passport["passport_id"])
+    owned = {s["skill_id"] for s in (versions[-1]["skills"] if versions else [])}
+    matched = [i for i in required if i["skillId"] in owned]
+    missing = [i for i in required if i["skillId"] not in owned]
+    return {"matched": matched, "missing": missing,
+            "suggestions": [{"skill": m, "learnVia": m.get("skillDescription", "")} for m in missing],
+            "model": "stub-extractor-v1"}
 
 
 def find_passport_for_student(store, email: str, student_id: str = "") -> Optional[dict]:
@@ -470,4 +739,10 @@ def request_out(store, r: dict):
     if r.get("record_id"):
         rec = next((x for x in store.list_records() if x["recordId"] == r["record_id"]), None)
         sync_status = rec["syncStatus"] if rec else None
-    return SkillRequestOut.model_validate({**r, "record_sync_status": sync_status})
+    status = "PENDING_ADMIN" if r.get("status") == "PENDING" else r.get("status")
+    return SkillRequestOut.model_validate({
+        **r, "status": status, "record_sync_status": sync_status,
+        "reasoning": r.get("description", ""),
+        "proof_links": _json_list(r.get("proof_links")) or ([r["evidence_url"]] if r.get("evidence_url") else []),
+        "instructor_approval": bool(r.get("instructor_approval")),
+        "career_center_approval": bool(r.get("career_center_approval"))})

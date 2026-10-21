@@ -56,3 +56,46 @@ Sheet when configured), exactly like an admin-entered row.
 
 Rules: a student cannot request a skill already on their passport or
 with another PENDING request; rejected requests create no sheet record.
+
+## Expansion (stub-first: LLM/IPFS/wallet behind interfaces)
+
+Request statuses widened to `SUBMITTED | AI_REVIEWED | NEEDS_TEST |
+PENDING_ADMIN | APPROVED | REJECTED` (legacy `PENDING` reads as
+`PENDING_ADMIN`). Every request carries `reasoning` (= description),
+`proofLinks[]`, `aiSummary`, `aiScore`, `aiModel` (deterministic stub
+reviewer `app/ai.py`), `reviewer`, and — for the top `AI Advanced Skill`
+tier — `instructorApproval`/`careerCenterApproval`. Advanced PROOF
+requests land in `NEEDS_TEST`; `POST /skill-requests/{id}/test` completes
+the test. `POST /admin/skill-requests/{id}/attest {role}` records a
+signer; approval of an Advanced request is refused until both roles
+attest. Approval still only writes the `NOT SYNCED` row (Trigger A).
+The DB is canonical for requests; the Google source mirrors decided
+requests into a `Skill Requests` sheet tab as a read-model.
+
+New endpoints:
+
+- `GET /issuer/registry`, `GET /.well-known/did.json` (+ `/issuer/did`) —
+  BTU role registry and the resolvable `did:web:btu.edu.ge` document
+  publishing the same Ed25519 key that signs versions.
+- `POST /admin/passports/{id}/skills/{recordId}/revoke {reason}` —
+  issues Vn+1 without the skill, `status=REVOKED_CONTENT`,
+  `revokedRecordIds[]`; old codes verify with `supersededReason`
+  ("outdated because a skill was later revoked: …"). Version status /
+  revocation / signer-role metadata lives **outside** the canonical
+  hashed payload (golden-hash parity is pinned by test).
+- `GET /passports/{id}/versions/{n}/credential` — W3C VC wrapping;
+  `.../badges` — Open Badges 3.0 `AchievementCredential` per skill;
+  `POST .../publish` (PDF upload) — IPFS stub CID stored on the version.
+- `POST /verify/bulk {codes[]}` (max 100, per-IP rate limit),
+  `POST /verify/explain {skillId, question}` (stub explainer),
+  `GET /public/{slug}` — shareable profile behind `/p/<slug>`;
+  `Passport.publicSlug` is generated at registration.
+- `GET /admin/needs-review`, `POST /admin/needs-review/{id}/release|reject` —
+  anomaly preflight inside `sync()` (batch > `ANOMALY_BATCH_THRESHOLD`,
+  or a record matching a REJECTED request) holds rows out of issuance as
+  `NEEDS_REVIEW` log entries with `SyncResult.flagged`.
+- `POST /me/skill-gap {jobDescription}` — stub keyword extractor diffed
+  against the student's latest skills; read-only.
+- `GET /me/passport/wallet` — Google/Apple wallet-pass stub JSON.
+- Email + in-app notifications fire on request APPROVED/REJECTED, on
+  revocation, and on each passport updated by a sync.
